@@ -731,16 +731,20 @@ _SECTION_PDF_TITLES = {
 }
 
 def _pdf_safe(text: str) -> str:
-    """Replace Unicode characters unsupported by Helvetica with ASCII equivalents."""
-    return (text
-        .replace("\u2014", "--").replace("\u2013", "-")   # em/en dash
-        .replace("\u2018", "'").replace("\u2019", "'")    # curly single quotes
-        .replace("\u201c", '"').replace("\u201d", '"')    # curly double quotes
-        .replace("\u2022", "-").replace("\u2023", "-")    # bullets
-        .replace("\u2192", "->").replace("\u2190", "<-")  # arrows
-        .replace("\u00a0", " ")                           # non-breaking space
-        .encode("latin-1", errors="replace").decode("latin-1")  # catch anything else
-    )
+    """Sanitize text to Helvetica-safe characters (printable ASCII + Latin-1)."""
+    _REPLACEMENTS = {
+        "\u2014": "--", "\u2013": "-", "\u2012": "-",
+        "\u2018": "'",  "\u2019": "'",
+        "\u201c": '"',  "\u201d": '"',
+        "\u2022": "-",  "\u2023": "-", "\u25cf": "-", "\u00b7": "-",
+        "\u2192": "->", "\u2190": "<-", "\u2026": "...",
+        "\u00a0": " ",  "\u200b": "",  "\ufeff": "",
+        "\u2713": "v",  "\u2715": "x", "\u00d7": "x",
+    }
+    for ch, rep in _REPLACEMENTS.items():
+        text = text.replace(ch, rep)
+    # Strip anything outside printable ASCII (32-126) or Latin-1 supplement (160-255)
+    return "".join(c if (32 <= ord(c) <= 126) or (160 <= ord(c) <= 255) else "?" for c in text)
 
 
 def generate_pdf(sections: dict, company: str, ts: str, model_label: str) -> bytes:
@@ -772,8 +776,12 @@ def generate_pdf(sections: dict, company: str, ts: str, model_label: str) -> byt
             if not line.strip():
                 pdf.ln(3)
                 continue
-            for subline in textwrap.wrap(line, width=95, break_long_words=True, break_on_hyphens=True) or [line]:
-                pdf.multi_cell(0, 5, subline)
+            for subline in textwrap.wrap(line, width=90, break_long_words=True, break_on_hyphens=True) or [line[:90]]:
+                pdf.set_x(pdf.l_margin)
+                try:
+                    pdf.multi_cell(pdf.epw, 5, subline)
+                except Exception:
+                    pass  # skip any line that still can't render
         pdf.ln(5)
 
     return bytes(pdf.output())
