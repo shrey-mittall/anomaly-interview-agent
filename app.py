@@ -13,6 +13,9 @@ import random
 import time
 import threading
 import queue as _queue
+import json
+import os
+import uuid
 
 from datetime import datetime
 
@@ -62,6 +65,25 @@ st.markdown("""
     }
     .sentiment-card, .sentiment-card * { color: #dde3ef !important; }
     .sentiment-card h3 { color: #fbbf24 !important; font-size: 15px; margin-top: 0; }
+
+    .qoq-card {
+        background: rgba(139,92,246,0.07);
+        border-left: 4px solid #8b5cf6;
+        border-radius: 6px;
+        padding: 16px 20px;
+        margin-bottom: 18px;
+    }
+    .qoq-card, .qoq-card * { color: #dde3ef !important; }
+    .qoq-card h3 { color: #a78bfa !important; font-size: 15px; margin-top: 0; }
+
+    .history-card {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 6px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
+        font-size: 13px;
+    }
 
     .email-card {
         background: rgba(255,255,255,0.04);
@@ -205,6 +227,35 @@ def dynamic_max_tokens(transcript: str, length_preset: int) -> int:
 
 MAX_TRANSCRIPT_CHARS = 150_000   # ~37k tokens — well within 200k context window
 WARN_TRANSCRIPT_CHARS = 80_000   # warn but still allow
+
+# ── History (cross-transcript memory) ────────────────────────────────────────
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcript_history.json")
+HISTORY_MAX  = 50
+
+def load_history() -> list:
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_run_to_history(company: str, ts: str, model_label: str, sections: dict):
+    history = load_history()
+    history.insert(0, {
+        "id":        str(uuid.uuid4())[:8],
+        "timestamp": ts,
+        "company":   company or "Unknown",
+        "model":     model_label,
+        "sections":  sections,
+    })
+    history = history[:HISTORY_MAX]
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+    except Exception:
+        pass  # non-fatal
 
 # ── PII obfuscation ───────────────────────────────────────────────────────────
 def obfuscate_pii(text: str):
@@ -378,9 +429,15 @@ _SECTION_INSTRUCTIONS = {
 }
 
 
-def build_section_prompt(transcript: str, length: str, section: str) -> str:
+def build_section_prompt(transcript: str, length: str, section: str, consensus: str = "") -> str:
     length_instruction = LENGTH_SETTINGS[length]["desc"]
     instruction = _SECTION_INSTRUCTIONS[section]
+    if section == "##FINANCIAL_SUMMARY##" and consensus.strip():
+        instruction = (
+            f"Consensus estimates to reference when stating beats/misses:\n{consensus.strip()}\n"
+            "Use these to explicitly state 'beat by $X' or 'missed by $X' where applicable.\n\n"
+            + instruction
+        )
     return f"Length guidance: {length_instruction}\n\n{instruction}\n\nTranscript:\n{transcript}"
 
 
@@ -395,7 +452,7 @@ _RETRYABLE_ERRORS = (
 
 def _stream_section(section_key: str, transcript: str, length: str,
                     model: str, max_tokens: int, temperature: float,
-                    out: _queue.Queue):
+                    out: _queue.Queue, consensus: str = ""):
     """Stream one section in a background thread.
 
     Queue items: (section_key, chunk, is_done, error_str_or_None)
@@ -410,7 +467,7 @@ def _stream_section(section_key: str, transcript: str, length: str,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": build_section_prompt(transcript, length, section_key)}],
+                messages=[{"role": "user", "content": build_section_prompt(transcript, length, section_key, consensus)}],
             ) as stream:
                 for text in stream.text_stream:
                     out.put((section_key, text, False, None))
@@ -424,6 +481,46 @@ def _stream_section(section_key: str, transcript: str, length: str,
             last_err = e
             break   # non-retryable — bail immediately
     out.put((section_key, "", True, str(last_err)))
+
+
+# ── QoQ comparison ────────────────────────────────────────────────────────────
+_QOQ_SYSTEM = """You are a senior investment analyst comparing two consecutive earnings calls for the same company.
+Be direct and specific. Flag meaningful changes, not noise. Use real numbers where available."""
+
+def run_qoq_comparison_streaming(
+    cur_guidance: str, cur_tone: str,
+    prior_transcript: str,
+    model: str, max_tokens: int, temperature: float,
+):
+    """Stream a quarter-over-quarter comparison given current sections + prior transcript."""
+    prompt = f"""Compare the current quarter results against the prior quarter transcript below.
+
+CURRENT QUARTER — GUIDANCE:
+{cur_guidance}
+
+CURRENT QUARTER — TONE/SENTIMENT:
+{cur_tone}
+
+PRIOR QUARTER TRANSCRIPT:
+{prior_transcript[:40_000]}
+
+Write a quarter-over-quarter comparison covering:
+1. **Guidance changes** — what was revised up, down, or maintained vs prior quarter. Use specific numbers.
+2. **Tone shift** — is management more or less confident? Any change in hedging, deflection, or candour?
+3. **Narrative changes** — key themes that appeared, disappeared, or intensified.
+4. **Red flags / green flags** — anything materially different that a PM should act on.
+
+Be concise and direct. Flag changes, not similarities."""
+
+    with get_client().messages.stream(
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=_QOQ_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
 
 
 # ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -671,6 +768,31 @@ with col_main:
         placeholder="Paste the full earnings call transcript text...",
     )
 
+    with st.expander("📅 Prior quarter transcript (optional — enables QoQ comparison)"):
+        prior_uploaded = st.file_uploader(
+            "Upload prior quarter transcript", type=["txt", "md", "csv", "pdf"],
+            key="prior_upload",
+        )
+        prior_file_content = ""
+        if prior_uploaded:
+            if prior_uploaded.type == "application/pdf":
+                try:
+                    from pypdf import PdfReader
+                    from io import BytesIO
+                    reader = PdfReader(BytesIO(prior_uploaded.read()))
+                    prior_file_content = "\n".join(p.extract_text() or "" for p in reader.pages)
+                except ImportError:
+                    st.error("PDF support requires pypdf: `pip install pypdf`")
+            else:
+                prior_file_content = prior_uploaded.read().decode("utf-8", errors="ignore")
+        prior_transcript_input = st.text_area(
+            "Or paste prior quarter transcript",
+            value=prior_file_content,
+            height=200,
+            placeholder="Paste prior quarter transcript here...",
+            key="prior_text",
+        )
+
 with col_settings:
     st.markdown("### Settings")
 
@@ -698,6 +820,37 @@ with col_settings:
     )
 
     obfuscate = st.checkbox("Obfuscate PII (names, firms, contacts)")
+
+    with st.expander("📊 Consensus Estimates (optional)"):
+        st.caption("Paste in sell-side consensus so the Financial Summary can state explicit beats/misses.")
+        consensus_revenue = st.text_input("Revenue consensus", placeholder="e.g. $1.52B")
+        consensus_eps     = st.text_input("EPS consensus",     placeholder="e.g. $2.97")
+
+    # ── History ───────────────────────────────────────────────────────────────
+    history = load_history()
+    if history:
+        with st.expander(f"📚 History ({len(history)} run{'s' if len(history) != 1 else ''})"):
+            for entry in history[:20]:
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    st.markdown(
+                        f'<div class="history-card">'
+                        f'<strong>{entry["company"]}</strong><br>'
+                        f'<span style="color:#6b7280">{entry["timestamp"]} · {entry["model"].split("(")[0].strip()}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                with c2:
+                    if st.button("Load", key=f"hist_{entry['id']}"):
+                        st.session_state.compare_sections = entry["sections"]
+                        st.session_state.compare_meta     = (entry["timestamp"], entry["model"], entry["company"])
+                        st.rerun()
+            if st.button("🗑 Clear history", type="secondary"):
+                try:
+                    os.remove(HISTORY_FILE)
+                except Exception:
+                    pass
+                st.rerun()
 
     st.divider()
 
@@ -775,7 +928,7 @@ if run_btn and transcript_input.strip():
         )
 
     # Clear previous output so stale results don't flash before new ones arrive
-    for k in ("last_raw", "last_sections", "last_elapsed", "last_meta", "last_stopped", "last_pii_found", "last_email", "generate_email"):
+    for k in ("last_raw", "last_sections", "last_elapsed", "last_meta", "last_stopped", "last_pii_found", "last_email", "generate_email", "last_qoq", "pending_qoq"):
         st.session_state.pop(k, None)
 
     st.session_state.pending_run           = True
@@ -785,8 +938,15 @@ if run_btn and transcript_input.strip():
     st.session_state.pending_model_label  = model_label
     st.session_state.pending_length       = length
     st.session_state.pending_temperature  = temperature
-    st.session_state.pending_max_tokens   = int(max_tokens_override)
-    st.session_state.pending_company      = company_name
+    st.session_state.pending_max_tokens      = int(max_tokens_override)
+    st.session_state.pending_company         = company_name
+    consensus_parts = []
+    if consensus_revenue.strip():
+        consensus_parts.append(f"Revenue: {consensus_revenue.strip()}")
+    if consensus_eps.strip():
+        consensus_parts.append(f"EPS: {consensus_eps.strip()}")
+    st.session_state.pending_consensus       = "\n".join(consensus_parts)
+    st.session_state.pending_prior_transcript = prior_transcript_input.strip()
     st.session_state.running = True
     st.session_state.stop_requested = False
     st.rerun()
@@ -801,7 +961,9 @@ if st.session_state.get("pending_run") and st.session_state.running:
     length           = st.session_state.pending_length
     temperature      = st.session_state.pending_temperature
     max_tokens_override = st.session_state.pending_max_tokens
-    company_name     = st.session_state.pending_company
+    company_name      = st.session_state.pending_company
+    consensus_str     = st.session_state.get("pending_consensus", "")
+    prior_transcript  = st.session_state.get("pending_prior_transcript", "")
 
     # PII map will be shown in the persistent output block after streaming
 
@@ -846,6 +1008,7 @@ if st.session_state.get("pending_run") and st.session_state.running:
             threading.Thread(
                 target=_stream_section,
                 args=(delim, transcript, length, selected_model, section_max, temperature, q),
+                kwargs={"consensus": consensus_str},
                 daemon=True,
             ).start()
 
@@ -938,6 +1101,19 @@ if st.session_state.get("pending_run") and st.session_state.running:
         st.session_state.last_sections       = sections
         st.session_state.last_meta           = (ts, model_label, company_name)
         st.session_state.last_stopped        = False
+
+        # Save to history
+        save_run_to_history(company_name, ts, model_label, sections)
+
+        # Queue QoQ comparison if prior transcript was provided
+        if prior_transcript:
+            st.session_state.pending_qoq          = True
+            st.session_state.qoq_prior_transcript = prior_transcript
+            st.session_state.qoq_sections         = sections
+            st.session_state.qoq_model            = selected_model
+            st.session_state.qoq_max_tokens       = min(int(max_tokens_override), 2048)
+            st.session_state.qoq_temperature      = temperature
+
         st.rerun()
     except anthropic.APIError as e:
         st.session_state.running = False
@@ -1077,3 +1253,87 @@ if not st.session_state.get("running") and st.session_state.get("last_sections")
             mime="text/plain",
             key="email_download",
         )
+
+# ── QoQ comparison (streams after main analysis if prior transcript provided) ─
+if st.session_state.get("pending_qoq") and not st.session_state.get("running"):
+    st.session_state.pending_qoq = False
+    sections_for_qoq  = st.session_state.get("qoq_sections", {})
+    prior_t           = st.session_state.get("qoq_prior_transcript", "")
+    qoq_model         = st.session_state.get("qoq_model", "claude-sonnet-4-6")
+    qoq_max_tokens    = st.session_state.get("qoq_max_tokens", 2048)
+    qoq_temperature   = st.session_state.get("qoq_temperature", 0.3)
+
+    st.divider()
+    qoq_placeholder = st.empty()
+    qoq_placeholder.markdown(
+        '<div class="qoq-card" style="opacity:0.4"><h3>📊 Quarter-over-Quarter Comparison</h3>'
+        '<span style="color:#aaa">Generating comparison...</span></div>',
+        unsafe_allow_html=True,
+    )
+    qoq_raw = ""
+    try:
+        for chunk in run_qoq_comparison_streaming(
+            cur_guidance=sections_for_qoq.get("##GUIDANCE##", ""),
+            cur_tone=sections_for_qoq.get("##TONE_SENTIMENT##", ""),
+            prior_transcript=prior_t,
+            model=qoq_model,
+            max_tokens=qoq_max_tokens,
+            temperature=qoq_temperature,
+        ):
+            qoq_raw += chunk
+            qoq_placeholder.markdown(
+                '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>' +
+                qoq_raw.strip().replace("\n", "<br>") + "</div>",
+                unsafe_allow_html=True,
+            )
+        st.session_state.last_qoq = qoq_raw
+        qoq_placeholder.markdown(
+            '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>' +
+            fmt(qoq_raw) + "</div>",
+            unsafe_allow_html=True,
+        )
+    except Exception as e:
+        qoq_placeholder.markdown(
+            f'<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>'
+            f'<span style="color:#ef4444">⚠ Comparison failed: {e}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+elif st.session_state.get("last_qoq") and not st.session_state.get("running"):
+    st.divider()
+    st.markdown(
+        '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>' +
+        fmt(st.session_state.last_qoq) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+# ── History comparison (loaded from sidebar) ──────────────────────────────────
+if st.session_state.get("compare_sections") and not st.session_state.get("running"):
+    compare_sections = st.session_state.compare_sections
+    compare_meta     = st.session_state.get("compare_meta", ("", "", ""))
+    ts_c, model_c, co_c = compare_meta
+
+    st.divider()
+    st.markdown(
+        f'<div style="font-size:13px;color:#a78bfa;font-weight:600;margin-bottom:12px;letter-spacing:1px">'
+        f'LOADED FROM HISTORY — {co_c} &nbsp;·&nbsp; {ts_c}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**Current run**")
+        cur = st.session_state.get("last_sections", {})
+        render_section(st.empty(), "section-card", "🔭 Guidance",         cur.get("##GUIDANCE##", "—"))
+        render_sentiment(st.empty(),                                        cur.get("##TONE_SENTIMENT##", ""))
+        render_takeaway(st.empty(),                                         cur.get("##INVESTMENT_TAKEAWAY##", ""))
+    with col_b:
+        st.markdown(f"**{co_c} ({ts_c})**")
+        render_section(st.empty(), "section-card", "🔭 Guidance",         compare_sections.get("##GUIDANCE##", "—"))
+        render_sentiment(st.empty(),                                        compare_sections.get("##TONE_SENTIMENT##", ""))
+        render_takeaway(st.empty(),                                         compare_sections.get("##INVESTMENT_TAKEAWAY##", ""))
+
+    if st.button("✕ Clear comparison", type="secondary"):
+        st.session_state.pop("compare_sections", None)
+        st.session_state.pop("compare_meta", None)
+        st.rerun()

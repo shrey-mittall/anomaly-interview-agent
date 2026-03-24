@@ -94,6 +94,19 @@ After a completed analysis, click **✉️ Generate Email Draft**:
 ### Fun animations
 Toggle wind streaks in the background — speed and colour themed per model tier.
 
+### Consensus Estimates
+Optional expander in settings. Paste in sell-side Revenue and EPS consensus — the Financial Summary section will explicitly state "beat by $X" / "missed by $X" rather than relying on the transcript mentioning it.
+
+### Quarter-over-Quarter Comparison
+Optional expander below the main transcript input. Upload or paste a prior quarter transcript — after the current analysis completes, a dedicated API call generates a **📊 Quarter-over-Quarter Comparison** card covering:
+- Guidance changes (revised up/down/maintained with specific numbers)
+- Tone shift (confidence, hedging, candour vs prior quarter)
+- Narrative changes (themes that appeared, disappeared, or intensified)
+- Red flags / green flags for the PM
+
+### Cross-Transcript Memory
+Every completed analysis is automatically saved to `transcript_history.json` (up to 50 entries). The **📚 History** expander in the settings panel lists past runs by company and date. Clicking **Load** on any entry opens a **side-by-side comparison view** — current run on the left, loaded run on the right — showing Guidance, Tone/Sentiment, and Investment Takeaway for both. History can be cleared at any time.
+
 ### Advanced / Dev
 Expander with manual **temperature** and **max tokens** overrides.
 
@@ -145,10 +158,10 @@ Obfuscation runs on the model's output rather than the input transcript. This me
 ## What I'd add with more time
 
 - **IR scraper** — URL input that pulls the transcript from the company's IR site or Seeking Alpha, eliminating the paste step
-- **Consensus data integration** — Bloomberg/FactSet API to auto-populate "vs consensus" comparisons rather than relying on the transcript mentioning it
+- **Bloomberg/FactSet consensus integration** — auto-populate consensus fields from a live data source rather than manual paste
 - **Evaluation harness** — run 20+ real transcripts, have analysts score each section 1–5, iterate on the prompt against real feedback
-- **Multi-transcript comparison** — side-by-side view or cross-transcript financial summary table for peak earnings season
-- **Persistent history** — store past analyses with search, so you can pull up last quarter's output alongside this quarter's
+- **History search** — full-text search across saved runs, not just a list
+- **Multi-transcript table** — cross-transcript financial summary table for peak earnings season (e.g. compare 10 companies at once)
 
 ---
 
