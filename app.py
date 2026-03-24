@@ -870,7 +870,7 @@ with col_main:
         if err:
             st.error(f"Could not fetch: {err}")
         else:
-            st.session_state.fetched_transcript = fetched
+            st.session_state.transcript_input = fetched
             st.caption(f"Fetched {len(fetched):,} chars from URL.")
 
     uploaded_file = st.file_uploader(
@@ -889,14 +889,14 @@ with col_main:
         else:
             file_content = uploaded_file.read().decode("utf-8", errors="ignore")
         if file_content:
+            st.session_state.transcript_input = file_content
             st.caption(f"Loaded: {uploaded_file.name} ({len(file_content):,} chars)")
 
-    prefill = st.session_state.pop("fetched_transcript", None) or file_content
     transcript_input = st.text_area(
         "Or paste transcript here",
-        value=prefill,
         height=420,
         placeholder="Paste the full earnings call transcript text...",
+        key="transcript_input",
     )
 
     with st.expander("📅 Prior quarter transcript (optional — enables QoQ comparison)"):
