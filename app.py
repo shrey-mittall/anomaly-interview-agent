@@ -417,9 +417,11 @@ _SECTION_INSTRUCTIONS = {
         "Write the tone/sentiment section for this earnings call.\n"
         "Qualitative read of management tone — overall posture, hedging/deflection, moments of unusual confidence, "
         "contrast between prepared remarks and Q&A tone.\n"
-        "End with these two lines exactly:\n"
-        "SENTIMENT: [Bearish / Cautious / Neutral / Constructive / Bullish]\n"
-        "CONFIDENCE: [Low / Medium / High]"
+        "End with these two lines exactly (no brackets, just the word):\n"
+        "SENTIMENT: Bearish\n"
+        "...or Cautious, Neutral, Constructive, Bullish — pick one.\n"
+        "CONFIDENCE: Low\n"
+        "...or Medium, High — pick one."
     ),
     "##INVESTMENT_TAKEAWAY##": (
         "Write the investment takeaway for this earnings call.\n"
@@ -682,8 +684,8 @@ def render_section(placeholder, css_class: str, title: str, content: str):
 
 
 def render_sentiment(placeholder, tone: str):
-    sentiment_match  = re.search(r'SENTIMENT:\s*(\w+)',  tone, re.IGNORECASE)
-    confidence_match = re.search(r'CONFIDENCE:\s*(\w+)', tone, re.IGNORECASE)
+    sentiment_match  = re.search(r'SENTIMENT:\s*\[?(\w+)\]?',  tone, re.IGNORECASE)
+    confidence_match = re.search(r'CONFIDENCE:\s*\[?(\w+)\]?', tone, re.IGNORECASE)
     sentiment_val  = sentiment_match.group(1).strip()  if sentiment_match  else ""
     confidence_val = confidence_match.group(1).strip() if confidence_match else ""
     s_color = SENTIMENT_COLORS.get(sentiment_val, "#6b7280")
@@ -1194,8 +1196,8 @@ if not st.session_state.get("running") and st.session_state.get("last_sections")
     if st.session_state.get("generate_email") and st.session_state.get("last_sections"):
         st.session_state.generate_email = False
         tone      = sections.get("##TONE_SENTIMENT##", "")
-        sent_match = re.search(r'SENTIMENT:\s*(\w+)', tone)
-        conf_match = re.search(r'CONFIDENCE:\s*(\w+)', tone)
+        sent_match = re.search(r'SENTIMENT:\s*\[?(\w+)\]?', tone, re.IGNORECASE)
+        conf_match = re.search(r'CONFIDENCE:\s*\[?(\w+)\]?', tone, re.IGNORECASE)
         sentiment_label  = sent_match.group(1) if sent_match else ""
         confidence_label = conf_match.group(1) if conf_match else ""
         tone_body = plain(re.sub(r'(SENTIMENT|CONFIDENCE):.*', '', tone))
