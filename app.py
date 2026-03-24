@@ -19,6 +19,19 @@ import uuid
 
 from datetime import datetime
 
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    _SCRAPE_AVAILABLE = True
+except ImportError:
+    _SCRAPE_AVAILABLE = False
+
+try:
+    from fpdf import FPDF
+    _PDF_AVAILABLE = True
+except ImportError:
+    _PDF_AVAILABLE = False
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Earnings Transcript Processor",
@@ -670,6 +683,69 @@ def plain(text: str) -> str:
     return text.strip()
 
 
+# ── URL scraping ──────────────────────────────────────────────────────────────
+def scrape_transcript(url: str) -> tuple:
+    """Fetch a URL and extract readable text. Returns (text, error_msg)."""
+    if not _SCRAPE_AVAILABLE:
+        return "", "requests/beautifulsoup4 not installed — run: pip install requests beautifulsoup4"
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+            tag.decompose()
+        lines = [l.strip() for l in soup.get_text(separator="\n").splitlines() if l.strip()]
+        text = "\n".join(lines)
+        if len(text) < 500:
+            return "", "Page returned too little text — it may require login or JavaScript rendering."
+        return text, ""
+    except requests.HTTPError as e:
+        return "", f"HTTP {e.response.status_code} — page may require login or block scrapers."
+    except Exception as e:
+        return "", str(e)
+
+
+# ── PDF export ─────────────────────────────────────────────────────────────────
+_SECTION_PDF_TITLES = {
+    "##FINANCIAL_SUMMARY##":   "Financial Summary",
+    "##GUIDANCE##":            "Guidance",
+    "##QA_HIGHLIGHTS##":       "Q&A Highlights",
+    "##TONE_SENTIMENT##":      "Tone / Sentiment",
+    "##INVESTMENT_TAKEAWAY##": "Investment Takeaway",
+}
+
+def generate_pdf(sections: dict, company: str, ts: str, model_label: str) -> bytes:
+    if not _PDF_AVAILABLE:
+        return b""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 12, f"Earnings Analysis — {company or 'Unknown'}", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 6, f"{ts}  |  {model_label.split('(')[0].strip()}", ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(6)
+
+    for delim, title in _SECTION_PDF_TITLES.items():
+        content = plain(sections.get(delim, "")).strip()
+        if not content:
+            continue
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_fill_color(240, 242, 248)
+        pdf.cell(0, 8, title, ln=True, fill=True)
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "", 10)
+        for line in content.splitlines():
+            pdf.multi_cell(0, 5, line if line.strip() else " ")
+        pdf.ln(5)
+
+    return bytes(pdf.output())
+
+
 SENTIMENT_COLORS  = {"Bearish": "#ef4444", "Cautious": "#f97316",
                      "Neutral": "#6b7280", "Constructive": "#3b82f6", "Bullish": "#10b981"}
 CONFIDENCE_COLORS = {"Low": "#ef4444", "Medium": "#f59e0b", "High": "#10b981"}
@@ -738,13 +814,50 @@ def render_qa(placeholder, qa_text: str):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+# ── Keyboard shortcut (Cmd/Ctrl+Enter → Run Analysis) ────────────────────────
+import streamlit.components.v1 as _components
+_components.html("""
+<script>
+window.parent.document.addEventListener('keydown', function(e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        const buttons = window.parent.document.querySelectorAll('button');
+        for (const btn of buttons) {
+            if (btn.innerText.trim().includes('Run Analysis')) {
+                btn.click();
+                break;
+            }
+        }
+    }
+}, true);
+</script>
+""", height=0)
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.title("📊 Earnings Transcript Processor")
-st.caption("Paste any earnings call transcript → structured analyst output")
+st.caption("Paste any earnings call transcript → structured analyst output · Cmd+Enter to run")
 
 col_main, col_settings = st.columns([2, 1])
 
 with col_main:
+    url_col, btn_col = st.columns([5, 1])
+    with url_col:
+        transcript_url = st.text_input(
+            "Fetch from URL",
+            placeholder="https://company.com/ir/transcript.html  (plain HTML only — JS-rendered sites won't work)",
+            label_visibility="collapsed",
+        )
+    with btn_col:
+        fetch_btn = st.button("Fetch", disabled=not transcript_url.strip(), use_container_width=True)
+    if fetch_btn and transcript_url.strip():
+        with st.spinner("Fetching transcript..."):
+            fetched, err = scrape_transcript(transcript_url.strip())
+        if err:
+            st.error(f"Could not fetch: {err}")
+        else:
+            st.session_state.fetched_transcript = fetched
+            st.caption(f"Fetched {len(fetched):,} chars from URL.")
+
     uploaded_file = st.file_uploader(
         "Upload transcript (.txt, .md, .csv, .pdf)", type=["txt", "md", "csv", "pdf"]
     )
@@ -763,9 +876,10 @@ with col_main:
         if file_content:
             st.caption(f"Loaded: {uploaded_file.name} ({len(file_content):,} chars)")
 
+    prefill = st.session_state.pop("fetched_transcript", None) or file_content
     transcript_input = st.text_area(
         "Or paste transcript here",
-        value=file_content,
+        value=prefill,
         height=420,
         placeholder="Paste the full earnings call transcript text...",
     )
@@ -1178,14 +1292,27 @@ if not st.session_state.get("running") and st.session_state.get("last_sections")
 
     if raw:
         st.divider()
-        col_dl, col_email = st.columns([1, 1])
-        with col_dl:
+        col_txt, col_pdf, col_email = st.columns([1, 1, 1])
+        fname_base = f"transcript_analysis_{datetime.now().strftime('%Y%m%d_%H%M')}"
+        with col_txt:
             st.download_button(
-                label="⬇ Download full output (text)",
+                label="⬇ Download (.txt)",
                 data=raw,
-                file_name=f"transcript_analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                file_name=f"{fname_base}.txt",
                 mime="text/plain",
             )
+        with col_pdf:
+            if _PDF_AVAILABLE:
+                pdf_meta = st.session_state.get("last_meta", ("", "", ""))
+                pdf_bytes = generate_pdf(sections, pdf_meta[2], pdf_meta[0], pdf_meta[1])
+                st.download_button(
+                    label="⬇ Download (.pdf)",
+                    data=pdf_bytes,
+                    file_name=f"{fname_base}.pdf",
+                    mime="application/pdf",
+                )
+            else:
+                st.caption("PDF: `pip install fpdf2`")
         with col_email:
             if st.button("✉️ Generate Email Draft", type="secondary"):
                 st.session_state.generate_email = True

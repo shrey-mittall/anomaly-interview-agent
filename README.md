@@ -28,8 +28,11 @@ After analysis, a **Generate Email Draft** button assembles a clean, editable em
 
 ### Install dependencies
 ```bash
-pip install anthropic streamlit python-dotenv pypdf
+pip install anthropic streamlit python-dotenv pypdf requests beautifulsoup4 fpdf2
 ```
+
+- `requests` + `beautifulsoup4` — URL transcript fetching (plain HTML pages)
+- `fpdf2` — PDF export of analysis output
 
 ### Set your API key
 Create a `.env` file in the project root:
@@ -51,7 +54,15 @@ Opens at `http://localhost:8501`.
 ### Input
 - **Paste** transcript directly into the text area
 - **Upload** a file: `.txt`, `.md`, `.csv`, or `.pdf` (PDF text extracted via pypdf)
+- **Fetch from URL** — paste a link to a plain HTML transcript page and click Fetch; JS-rendered or login-gated pages (e.g. Seeking Alpha) will not work
 - Optional company name/ticker for labelling output
+
+### Keyboard shortcut
+**Cmd+Enter** (Mac) / **Ctrl+Enter** (Windows) triggers Run Analysis from anywhere on the page.
+
+### Export
+- **Download (.txt)** — raw analysis output as plain text
+- **Download (.pdf)** — formatted PDF with section headings and clean typography (requires `fpdf2`)
 
 ### Model selection
 Three tiers, selectable from the sidebar:
