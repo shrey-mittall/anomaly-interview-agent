@@ -775,21 +775,19 @@ with col_main:
             "Upload prior quarter transcript", type=["txt", "md", "csv", "pdf"],
             key="prior_upload",
         )
-        prior_file_content = ""
         if prior_uploaded:
             if prior_uploaded.type == "application/pdf":
                 try:
                     from pypdf import PdfReader
                     from io import BytesIO
                     reader = PdfReader(BytesIO(prior_uploaded.read()))
-                    prior_file_content = "\n".join(p.extract_text() or "" for p in reader.pages)
+                    st.session_state.prior_text = "\n".join(p.extract_text() or "" for p in reader.pages)
                 except ImportError:
                     st.error("PDF support requires pypdf: `pip install pypdf`")
             else:
-                prior_file_content = prior_uploaded.read().decode("utf-8", errors="ignore")
+                st.session_state.prior_text = prior_uploaded.read().decode("utf-8", errors="ignore")
         prior_transcript_input = st.text_area(
             "Or paste prior quarter transcript",
-            value=prior_file_content,
             height=200,
             placeholder="Paste prior quarter transcript here...",
             key="prior_text",
@@ -803,7 +801,7 @@ with col_settings:
     model_label = st.selectbox("Model", list(MODELS.keys()), index=0)
     selected_model = MODELS[model_label]
     info = MODEL_INFO[model_label]
-    fun_animations = st.toggle("Fun animations", value=True)
+    fun_animations = st.toggle("Fun animations", value=False)
     if fun_animations:
         inject_theme(info)
     st.markdown(
