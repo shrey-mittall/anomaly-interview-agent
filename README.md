@@ -137,6 +137,9 @@ If any section thread has not completed within 120 seconds, it is abandoned and 
 **Graceful partial failure.**
 If a section exhausts its retries and fails, a red error card replaces only that section. The remaining four sections render normally. The analysis is never fully aborted due to a single section failure.
 
+**Sentiment/confidence signal protection.**
+The tone section prompt instructs the model to output `SENTIMENT: Word` and `CONFIDENCE: Word` without brackets. The PII obfuscation pass protects these lines from name replacement via placeholder swap. The regex parser uses `\[?(\w+)\]?` as a fallback to handle any output that still includes brackets. These three layers ensure the sentiment display always renders correctly.
+
 ---
 
 ## Design decisions
