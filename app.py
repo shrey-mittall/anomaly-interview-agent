@@ -730,6 +730,19 @@ _SECTION_PDF_TITLES = {
     "##INVESTMENT_TAKEAWAY##": "Investment Takeaway",
 }
 
+def _pdf_safe(text: str) -> str:
+    """Replace Unicode characters unsupported by Helvetica with ASCII equivalents."""
+    return (text
+        .replace("\u2014", "--").replace("\u2013", "-")   # em/en dash
+        .replace("\u2018", "'").replace("\u2019", "'")    # curly single quotes
+        .replace("\u201c", '"').replace("\u201d", '"')    # curly double quotes
+        .replace("\u2022", "-").replace("\u2023", "-")    # bullets
+        .replace("\u2192", "->").replace("\u2190", "<-")  # arrows
+        .replace("\u00a0", " ")                           # non-breaking space
+        .encode("latin-1", errors="replace").decode("latin-1")  # catch anything else
+    )
+
+
 def generate_pdf(sections: dict, company: str, ts: str, model_label: str) -> bytes:
     if not _PDF_AVAILABLE:
         return b""
@@ -738,15 +751,15 @@ def generate_pdf(sections: dict, company: str, ts: str, model_label: str) -> byt
     pdf.add_page()
 
     pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 12, f"Earnings Analysis — {company or 'Unknown'}", ln=True)
+    pdf.cell(0, 12, _pdf_safe(f"Earnings Analysis - {company or 'Unknown'}"), ln=True)
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 6, f"{ts}  |  {model_label.split('(')[0].strip()}", ln=True)
+    pdf.cell(0, 6, _pdf_safe(f"{ts}  |  {model_label.split('(')[0].strip()}"), ln=True)
     pdf.set_text_color(0, 0, 0)
     pdf.ln(6)
 
     for delim, title in _SECTION_PDF_TITLES.items():
-        content = plain(sections.get(delim, "")).strip()
+        content = _pdf_safe(plain(sections.get(delim, "")).strip())
         if not content:
             continue
         pdf.set_font("Helvetica", "B", 13)
