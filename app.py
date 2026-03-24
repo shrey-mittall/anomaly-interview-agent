@@ -209,6 +209,15 @@ WARN_TRANSCRIPT_CHARS = 80_000   # warn but still allow
 # ── PII obfuscation ───────────────────────────────────────────────────────────
 def obfuscate_pii(text: str):
     """Replace PII with numbered tokens. Returns (cleaned_text, legend)."""
+
+    # Protect structured signal lines so PII passes never touch them
+    _protected = {}
+    def _protect(m):
+        key = f'\x00SIGNAL{len(_protected)}\x00'
+        _protected[key] = m.group(0)
+        return key
+    text = re.sub(r'^(?:SENTIMENT|CONFIDENCE):[^\n]*', _protect, text, flags=re.MULTILINE | re.IGNORECASE)
+
     registry = {}   # original_value -> token e.g. "John Smith" -> "EXECUTIVE_1"
     counters = {}   # label -> count
 
@@ -262,6 +271,10 @@ def obfuscate_pii(text: str):
             last = words[-1]
             if len(last) >= 4:
                 text = re.sub(rf'\b{re.escape(last)}\b', f'[{token}]', text)
+
+    # Restore protected signal lines
+    for key, val in _protected.items():
+        text = text.replace(key, val)
 
     legend = [{"token": tok, "value": val} for val, tok in sorted(registry.items(), key=lambda x: x[1])]
     return text, legend, registry
@@ -371,24 +384,46 @@ def build_section_prompt(transcript: str, length: str, section: str) -> str:
     return f"Length guidance: {length_instruction}\n\n{instruction}\n\nTranscript:\n{transcript}"
 
 
+_MAX_RETRIES      = 3
+_SECTION_TIMEOUT  = 120   # seconds before a hung section is abandoned
+_RETRYABLE_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    anthropic.APIStatusError,   # catches 529 overload
+)
+
+
 def _stream_section(section_key: str, transcript: str, length: str,
                     model: str, max_tokens: int, temperature: float,
                     out: _queue.Queue):
-    """Run one section in a background thread, putting chunks into out."""
-    try:
-        with get_client().messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": build_section_prompt(transcript, length, section_key)}],
-        ) as stream:
-            for text in stream.text_stream:
-                out.put((section_key, text, False))
-    except Exception as e:
-        out.put((section_key, f"\n[Error: {e}]", False))
-    finally:
-        out.put((section_key, "", True))
+    """Stream one section in a background thread.
+
+    Queue items: (section_key, chunk, is_done, error_str_or_None)
+    Retries up to _MAX_RETRIES times on transient API errors with
+    exponential backoff before signalling failure.
+    """
+    last_err = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            with get_client().messages.stream(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": build_section_prompt(transcript, length, section_key)}],
+            ) as stream:
+                for text in stream.text_stream:
+                    out.put((section_key, text, False, None))
+            out.put((section_key, "", True, None))   # success
+            return
+        except _RETRYABLE_ERRORS as e:
+            last_err = e
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)   # 1s → 2s → stop
+        except Exception as e:
+            last_err = e
+            break   # non-retryable — bail immediately
+    out.put((section_key, "", True, str(last_err)))
 
 
 # ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -444,22 +479,81 @@ def parse_qa(qa_text: str) -> list:
     return entries
 
 
+def _md_inline(text: str) -> str:
+    """Apply inline markdown (bold/italic) to a string."""
+    text = re.sub(r'\*\*\*(.*?)\*\*\*', r'<strong><em>\1</em></strong>', text)
+    text = re.sub(r'\*\*(.*?)\*\*',     r'<strong>\1</strong>', text)
+    text = re.sub(r'\*(.*?)\*',          r'<em>\1</em>', text)
+    return text
+
+
+def _render_md_table(table_lines: list) -> str:
+    """Convert a block of markdown table lines into an HTML table."""
+    rows = []
+    for line in table_lines:
+        cells = [c.strip() for c in line.strip().strip('|').split('|')]
+        rows.append(cells)
+
+    # Find the separator row (|----|----| style)
+    sep_idx = next(
+        (i for i, r in enumerate(rows) if all(re.match(r'^[-:\s]+$', c) for c in r if c)),
+        None,
+    )
+    header_rows = rows[:sep_idx] if sep_idx is not None else []
+    body_rows   = rows[sep_idx + 1:] if sep_idx is not None else rows
+
+    html = '<table style="width:100%;border-collapse:collapse;margin:10px 0;font-size:13px">'
+    if header_rows:
+        html += '<thead>'
+        for row in header_rows:
+            html += '<tr>' + ''.join(
+                f'<th style="border-bottom:1px solid rgba(255,255,255,0.2);padding:6px 10px;'
+                f'text-align:left;color:#60a5fa;white-space:nowrap">{_md_inline(c)}</th>'
+                for c in row
+            ) + '</tr>'
+        html += '</thead>'
+    html += '<tbody>'
+    for row in body_rows:
+        html += '<tr>' + ''.join(
+            f'<td style="border-bottom:1px solid rgba(255,255,255,0.07);'
+            f'padding:6px 10px">{_md_inline(c)}</td>'
+            for c in row
+        ) + '</tr>'
+    html += '</tbody></table>'
+    return html
+
+
 def fmt(text: str) -> str:
     """Convert markdown to HTML for injection inside styled cards."""
     text = re.sub(r'##[A-Z0-9_]+##', '', text)
     text = re.sub(r'^Q\d+\s*$', '', text, flags=re.MULTILINE)
     text = text.strip()
-    lines, out = text.split('\n'), []
-    for line in lines:
+
+    lines = text.split('\n')
+    out   = []
+    i     = 0
+    while i < len(lines):
+        line = lines[i]
+        # Detect markdown table: current line starts with | and next is a separator row
+        if (line.strip().startswith('|') and
+                i + 1 < len(lines) and
+                re.match(r'^\|[\s\-:|]+\|', lines[i + 1].strip())):
+            table_block = []
+            while i < len(lines) and lines[i].strip().startswith('|'):
+                table_block.append(lines[i])
+                i += 1
+            out.append(_render_md_table(table_block))
+            continue
+
         line = line.rstrip()
         line = re.sub(r'^###\s+(.+)', r'<strong style="font-size:14px">\1</strong>', line)
         line = re.sub(r'^##\s+(.+)',  r'<strong style="font-size:15px">\1</strong>', line)
         line = re.sub(r'^#\s+(.+)',   r'<strong style="font-size:16px">\1</strong>', line)
         line = re.sub(r'^[-*•]\s+', '&bull; ', line)
-        line = re.sub(r'\*\*\*(.*?)\*\*\*', r'<strong><em>\1</em></strong>', line)
-        line = re.sub(r'\*\*(.*?)\*\*',     r'<strong>\1</strong>', line)
-        line = re.sub(r'\*(.*?)\*',          r'<em>\1</em>', line)
+        line = _md_inline(line)
         out.append(line)
+        i += 1
+
     result = '<br>'.join(out)
     result = re.sub(r'(<br>){3,}', '<br><br>', result)
     return result
@@ -491,8 +585,8 @@ def render_section(placeholder, css_class: str, title: str, content: str):
 
 
 def render_sentiment(placeholder, tone: str):
-    sentiment_match  = re.search(r'SENTIMENT:\s*(\w+)', tone)
-    confidence_match = re.search(r'CONFIDENCE:\s*(\w+)', tone)
+    sentiment_match  = re.search(r'SENTIMENT:\s*(\w+)',  tone, re.IGNORECASE)
+    confidence_match = re.search(r'CONFIDENCE:\s*(\w+)', tone, re.IGNORECASE)
     sentiment_val  = sentiment_match.group(1).strip()  if sentiment_match  else ""
     confidence_val = confidence_match.group(1).strip() if confidence_match else ""
     s_color = SENTIMENT_COLORS.get(sentiment_val, "#6b7280")
@@ -755,27 +849,56 @@ if st.session_state.get("pending_run") and st.session_state.running:
                 daemon=True,
             ).start()
 
+        section_errors = {}   # section_key -> error string for failed sections
+
         while not all(section_done.values()):
             if st.session_state.get("stop_requested"):
                 st.session_state.running = False
                 st.rerun()
+
+            # Timeout check — abandon any section that has been running too long
+            now = time.time()
+            for key in SECTION_DELIMITERS:
+                if not section_done[key] and (now - t0) > _SECTION_TIMEOUT:
+                    section_done[key]   = True
+                    section_errors[key] = f"Timed out after {_SECTION_TIMEOUT}s"
+                    css_class, title = SECTION_LABELS[key]
+                    placeholders[key].markdown(
+                        f'<div class="{css_class}" style="opacity:0.6"><h3>{title}</h3>'
+                        f'<span style="color:#f97316">⚠ Section timed out — try again</span></div>',
+                        unsafe_allow_html=True,
+                    )
+
             try:
-                section_key, chunk, done = q.get(timeout=0.05)
+                section_key, chunk, done, err = q.get(timeout=0.05)
             except _queue.Empty:
+                continue
+
+            # Ignore signals for sections already marked done (e.g. timed-out)
+            if section_done[section_key]:
                 continue
 
             if done:
                 section_done[section_key] = True
                 css_class, title = SECTION_LABELS[section_key]
-                content = section_raw[section_key]
-                if section_key == "##TONE_SENTIMENT##":
-                    render_sentiment(placeholders[section_key], content)
-                elif section_key == "##INVESTMENT_TAKEAWAY##":
-                    render_takeaway(placeholders[section_key], content)
-                elif section_key == "##QA_HIGHLIGHTS##":
-                    render_qa(placeholders[section_key], content)
+                if err:
+                    # Graceful partial failure — render error card, others continue
+                    section_errors[section_key] = err
+                    placeholders[section_key].markdown(
+                        f'<div class="{css_class}" style="opacity:0.6"><h3>{title}</h3>'
+                        f'<span style="color:#ef4444">⚠ Failed after {_MAX_RETRIES} attempts: {err}</span></div>',
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    render_section(placeholders[section_key], css_class, title, content)
+                    content = section_raw[section_key]
+                    if section_key == "##TONE_SENTIMENT##":
+                        render_sentiment(placeholders[section_key], content)
+                    elif section_key == "##INVESTMENT_TAKEAWAY##":
+                        render_takeaway(placeholders[section_key], content)
+                    elif section_key == "##QA_HIGHLIGHTS##":
+                        render_qa(placeholders[section_key], content)
+                    else:
+                        render_section(placeholders[section_key], css_class, title, content)
             else:
                 section_raw[section_key] += chunk
                 css_class, title = SECTION_LABELS[section_key]
@@ -796,13 +919,18 @@ if st.session_state.get("pending_run") and st.session_state.running:
             st.session_state.last_pii_found = []
         elapsed = time.time() - t0
 
-        # Re-render all sections with full formatting after streaming completes
+        # Re-render successful sections with full formatting; leave error cards untouched
         sections = parse_sections(raw)
-        render_section(placeholders["##FINANCIAL_SUMMARY##"], "section-card",   "📋 Financial Summary",    sections.get("##FINANCIAL_SUMMARY##", ""))
-        render_section(placeholders["##GUIDANCE##"],          "section-card",   "🔭 Guidance",              sections.get("##GUIDANCE##", ""))
-        render_qa(placeholders["##QA_HIGHLIGHTS##"],                                                         sections.get("##QA_HIGHLIGHTS##", ""))
-        render_sentiment(placeholders["##TONE_SENTIMENT##"],                                                 sections.get("##TONE_SENTIMENT##", ""))
-        render_takeaway(placeholders["##INVESTMENT_TAKEAWAY##"], sections.get("##INVESTMENT_TAKEAWAY##", ""))
+        if "##FINANCIAL_SUMMARY##"   not in section_errors:
+            render_section(placeholders["##FINANCIAL_SUMMARY##"], "section-card", "📋 Financial Summary", sections.get("##FINANCIAL_SUMMARY##", ""))
+        if "##GUIDANCE##"            not in section_errors:
+            render_section(placeholders["##GUIDANCE##"],          "section-card", "🔭 Guidance",           sections.get("##GUIDANCE##", ""))
+        if "##QA_HIGHLIGHTS##"       not in section_errors:
+            render_qa(placeholders["##QA_HIGHLIGHTS##"],                                                    sections.get("##QA_HIGHLIGHTS##", ""))
+        if "##TONE_SENTIMENT##"      not in section_errors:
+            render_sentiment(placeholders["##TONE_SENTIMENT##"],                                            sections.get("##TONE_SENTIMENT##", ""))
+        if "##INVESTMENT_TAKEAWAY##" not in section_errors:
+            render_takeaway(placeholders["##INVESTMENT_TAKEAWAY##"],                                        sections.get("##INVESTMENT_TAKEAWAY##", ""))
 
         st.session_state.running             = False
         st.session_state.last_raw            = raw

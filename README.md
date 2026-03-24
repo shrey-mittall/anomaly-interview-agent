@@ -63,8 +63,9 @@ Three tiers, selectable from the sidebar:
 | 🔴 Most Thorough | Claude Opus 4.6 | ~30s | ~$0.10–0.25 |
 
 ### Streaming UI
-- Sections render as skeleton cards immediately, filling live as the model streams
-- Full markdown formatting applied on completion (bold, bullets, headings)
+- All five sections stream **simultaneously** — each runs as an independent parallel API call, so total wall-clock time equals the slowest section rather than the sum of all five
+- Sections render as skeleton cards immediately, filling live as chunks arrive from each thread
+- Full markdown formatting applied on completion (bold, bullets, headings, **tables rendered as styled HTML**)
 - Output persists across setting changes — only cleared on a new run
 
 ### Run / Stop
@@ -81,6 +82,7 @@ Optional checkbox. When enabled:
 - Analysts matched by firm context (`Jane Doe — Goldman Sachs`, `Jane Doe from Morgan Stanley`, etc.)
 - Second pass replaces full "First Last" name pairs and standalone last names throughout the text
 - Tokens numbered: `[EXECUTIVE_1]`, `[ANALYST_1]`, etc.
+- Structured signal lines (`SENTIMENT:`, `CONFIDENCE:`) are protected from replacement so the Tone/Sentiment display always renders correctly
 - **PII Redaction Map** expander shows every token → real name mapping with colour coding
 
 ### Email Draft
@@ -97,7 +99,37 @@ Expander with manual **temperature** and **max tokens** overrides.
 
 ---
 
+## Performance
+
+**Parallel section inferencing.**
+Each of the five sections is produced by an independent API call running in its own background thread. All five fire simultaneously — total latency is the slowest section, not the sum of all five. Each section gets the full token budget independently, so no section competes with another for output length.
+
+**Cached API client.**
+The Anthropic client is instantiated once per process via `@st.cache_resource` and reused across all runs and all section threads, avoiding repeated connection overhead.
+
+**Transcript length guard.**
+- Hard block at 150,000 characters (~37k tokens) — shows a clear error before any API call is made
+- Warning banner between 80,000–150,000 characters so the analyst knows to expect slower results
+
+---
+
+## Reliability
+
+**Retry with exponential backoff.**
+Each section thread retries up to 3 times on transient API errors (rate limit, overload/529, connection drop) with 1s → 2s backoff between attempts. Non-retryable errors (bad request, auth) bail immediately.
+
+**Per-section timeout.**
+If any section thread has not completed within 120 seconds, it is abandoned and an orange warning card is shown in its place. The other sections are unaffected and continue to completion.
+
+**Graceful partial failure.**
+If a section exhausts its retries and fails, a red error card replaces only that section. The remaining four sections render normally. The analysis is never fully aborted due to a single section failure.
+
+---
+
 ## Design decisions
+
+**Parallel calls over single call.**
+Originally all five sections were produced in one API call. Parallel calls increase cost proportionally (5× output tokens) but cut wall-clock time significantly and give each section its own focused prompt and full token budget — producing better-separated, more detailed output per section.
 
 **Delimiter-based parsing over JSON.**
 The app prompts for `##SECTION##` delimiters rather than JSON. This eliminates an entire class of parse failures (fenced code blocks, trailing commas, truncated objects) and enables true token-by-token streaming — sections fill live rather than appearing all at once after a wait.
@@ -107,9 +139,6 @@ The system prompt positions the model as "a senior analyst at a long/short hedge
 
 **PII on output, not input.**
 Obfuscation runs on the model's output rather than the input transcript. This means the model always sees real names and writes naturally — the redaction is applied to what the analyst actually reads, not what the model reasons over.
-
-**Single API call.**
-All five sections are produced in one call. An alternative would be five separate calls (one per section) for longer, more detailed output — but at 5× the cost and latency. For an analyst reading this at 8am before market open, a single fast call felt right.
 
 ---
 
