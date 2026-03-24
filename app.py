@@ -767,8 +767,13 @@ def generate_pdf(sections: dict, company: str, ts: str, model_label: str) -> byt
         pdf.cell(0, 8, title, ln=True, fill=True)
         pdf.ln(2)
         pdf.set_font("Helvetica", "", 10)
+        import textwrap
         for line in content.splitlines():
-            pdf.multi_cell(0, 5, line if line.strip() else " ")
+            if not line.strip():
+                pdf.ln(3)
+                continue
+            for subline in textwrap.wrap(line, width=95, break_long_words=True, break_on_hyphens=True) or [line]:
+                pdf.multi_cell(0, 5, subline)
         pdf.ln(5)
 
     return bytes(pdf.output())
