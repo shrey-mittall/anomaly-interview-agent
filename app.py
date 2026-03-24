@@ -692,11 +692,26 @@ def scrape_transcript(url: str) -> tuple:
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
-            tag.decompose()
-        lines = [l.strip() for l in soup.get_text(separator="\n").splitlines() if l.strip()]
-        text = "\n".join(lines)
+
+        content_type = resp.headers.get("Content-Type", "")
+        is_pdf = "application/pdf" in content_type or url.lower().split("?")[0].endswith(".pdf")
+
+        if is_pdf:
+            try:
+                from pypdf import PdfReader
+                from io import BytesIO
+                reader = PdfReader(BytesIO(resp.content))
+                text = "\n".join(p.extract_text() or "" for p in reader.pages)
+                text = "\n".join(l.strip() for l in text.splitlines() if l.strip())
+            except ImportError:
+                return "", "PDF URL detected but pypdf is not installed — run: pip install pypdf"
+        else:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+                tag.decompose()
+            lines = [l.strip() for l in soup.get_text(separator="\n").splitlines() if l.strip()]
+            text = "\n".join(lines)
+
         if len(text) < 500:
             return "", "Page returned too little text — it may require login or JavaScript rendering."
         return text, ""
