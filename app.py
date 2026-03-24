@@ -11,6 +11,8 @@ import streamlit as st
 import re
 import random
 import time
+import threading
+import queue as _queue
 
 from datetime import datetime
 
@@ -191,6 +193,19 @@ LENGTH_SETTINGS = {
     "Detailed": {"desc": "Full depth. Include all caveats and nuance.",    "max_tokens": 8192},
 }
 
+# Rough chars-per-token estimate for English prose
+_CHARS_PER_TOKEN = 4
+
+def dynamic_max_tokens(transcript: str, length_preset: int) -> int:
+    """Scale token budget with transcript size, capped at the preset."""
+    transcript_tokens = len(transcript) // _CHARS_PER_TOKEN
+    # Output budget: ~30% of input length, minimum 1024, capped at preset
+    suggested = max(1024, min(transcript_tokens // 3, length_preset))
+    return suggested
+
+MAX_TRANSCRIPT_CHARS = 150_000   # ~37k tokens — well within 200k context window
+WARN_TRANSCRIPT_CHARS = 80_000   # warn but still allow
+
 # ── PII obfuscation ───────────────────────────────────────────────────────────
 def obfuscate_pii(text: str):
     """Replace PII with numbered tokens. Returns (cleaned_text, legend)."""
@@ -307,20 +322,73 @@ Now write the actual content for each section based on this transcript:
 {transcript}"""
 
 
-# ── Core analysis ─────────────────────────────────────────────────────────────
-def run_analysis_streaming(transcript: str, model: str, length: str,
-                           temperature: float, max_tokens: int):
-    """Stream raw text from the API, yielding chunks as they arrive."""
-    client = anthropic.Anthropic()
-    with client.messages.stream(
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": build_user_prompt(transcript, length)}],
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+# ── Cached API client ─────────────────────────────────────────────────────────
+@st.cache_resource
+def get_client():
+    return anthropic.Anthropic()
+
+
+# ── Per-section prompts (used for parallel inferencing) ───────────────────────
+_SECTION_INSTRUCTIONS = {
+    "##FINANCIAL_SUMMARY##": (
+        "Write the financial summary for this earnings call.\n"
+        "Cover key reported metrics — revenue (actual vs consensus/guidance), EBITDA margin, EPS, free cash flow. "
+        "Note beats and misses explicitly. Use **bold** for key numbers and beat/miss labels. "
+        "Use real names of executives when relevant."
+    ),
+    "##GUIDANCE##": (
+        "Write the guidance section for this earnings call.\n"
+        "Cover forward-looking statements only — revised full-year guidance, Q4 specifics, "
+        "segment-level commentary, notable caveats. Flag meaningful changes from prior guidance."
+    ),
+    "##QA_HIGHLIGHTS##": (
+        "Write the Q&A highlights for this earnings call.\n"
+        "3 to 5 Q&A exchanges. Number each block and separate with ---. Use exactly this format:\n"
+        "Q1\nANALYST: [full name — firm, exactly as in transcript]\n"
+        "EXECUTIVE: [full name — title, exactly as in transcript]\n"
+        "QUESTION: [1-2 sentence paraphrase]\nRESPONSE: [2-4 sentences, include numbers/commitments, note if evasive]\n"
+        "---"
+    ),
+    "##TONE_SENTIMENT##": (
+        "Write the tone/sentiment section for this earnings call.\n"
+        "Qualitative read of management tone — overall posture, hedging/deflection, moments of unusual confidence, "
+        "contrast between prepared remarks and Q&A tone.\n"
+        "End with these two lines exactly:\n"
+        "SENTIMENT: [Bearish / Cautious / Neutral / Constructive / Bullish]\n"
+        "CONFIDENCE: [Low / Medium / High]"
+    ),
+    "##INVESTMENT_TAKEAWAY##": (
+        "Write the investment takeaway for this earnings call.\n"
+        "One paragraph (4-6 sentences). Key driver of miss/beat, thesis implications, "
+        "biggest open question, instinct on stock reaction."
+    ),
+}
+
+
+def build_section_prompt(transcript: str, length: str, section: str) -> str:
+    length_instruction = LENGTH_SETTINGS[length]["desc"]
+    instruction = _SECTION_INSTRUCTIONS[section]
+    return f"Length guidance: {length_instruction}\n\n{instruction}\n\nTranscript:\n{transcript}"
+
+
+def _stream_section(section_key: str, transcript: str, length: str,
+                    model: str, max_tokens: int, temperature: float,
+                    out: _queue.Queue):
+    """Run one section in a background thread, putting chunks into out."""
+    try:
+        with get_client().messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": build_section_prompt(transcript, length, section_key)}],
+        ) as stream:
+            for text in stream.text_stream:
+                out.put((section_key, text, False))
+    except Exception as e:
+        out.put((section_key, f"\n[Error: {e}]", False))
+    finally:
+        out.put((section_key, "", True))
 
 
 # ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -600,6 +668,18 @@ else:
 if run_btn and transcript_input.strip():
     transcript = transcript_input.strip()
 
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        st.error(
+            f"Transcript too long ({len(transcript):,} chars). "
+            f"Maximum is {MAX_TRANSCRIPT_CHARS:,} chars (~37k tokens). "
+            "Trim the transcript and try again."
+        )
+        st.stop()
+    elif len(transcript) > WARN_TRANSCRIPT_CHARS:
+        st.warning(
+            f"Large transcript ({len(transcript):,} chars) — analysis may take longer and use more tokens."
+        )
+
     # Clear previous output so stale results don't flash before new ones arrive
     for k in ("last_raw", "last_sections", "last_elapsed", "last_meta", "last_stopped", "last_pii_found", "last_email", "generate_email"):
         st.session_state.pop(k, None)
@@ -662,40 +742,52 @@ if st.session_state.get("pending_run") and st.session_state.running:
                 unsafe_allow_html=True,
             )
 
-        raw = ""
-        current_delim = None
+        section_raw  = {d: "" for d in SECTION_DELIMITERS}
+        section_done = {d: False for d in SECTION_DELIMITERS}
+        # Each section runs independently — full budget per section
+        section_max = int(max_tokens_override)
 
-        for chunk in run_analysis_streaming(
-            transcript=transcript,
-            model=selected_model,
-            length=length,
-            temperature=temperature,
-            max_tokens=int(max_tokens_override),
-        ):
+        q = _queue.Queue()
+        for delim in SECTION_DELIMITERS:
+            threading.Thread(
+                target=_stream_section,
+                args=(delim, transcript, length, selected_model, section_max, temperature, q),
+                daemon=True,
+            ).start()
+
+        while not all(section_done.values()):
             if st.session_state.get("stop_requested"):
                 st.session_state.running = False
                 st.rerun()
-            raw += chunk
-            st.session_state.streaming_raw = raw  # persist partial output
+            try:
+                section_key, chunk, done = q.get(timeout=0.05)
+            except _queue.Empty:
+                continue
 
-            # Detect when a new section delimiter appears
-            for delim in SECTION_DELIMITERS:
-                if delim in raw and current_delim != delim and delim in placeholders:
-                    current_delim = delim
-
-            # Stream current section content live into its placeholder
-            if current_delim and current_delim in placeholders:
-                after = raw.split(current_delim, 1)[1]
-                # Trim off any next delimiter that may have arrived
-                for next_d in SECTION_DELIMITERS:
-                    if next_d != current_delim and next_d in after:
-                        after = after.split(next_d)[0]
-                css_class, title = SECTION_LABELS[current_delim]
-                placeholders[current_delim].markdown(
+            if done:
+                section_done[section_key] = True
+                css_class, title = SECTION_LABELS[section_key]
+                content = section_raw[section_key]
+                if section_key == "##TONE_SENTIMENT##":
+                    render_sentiment(placeholders[section_key], content)
+                elif section_key == "##INVESTMENT_TAKEAWAY##":
+                    render_takeaway(placeholders[section_key], content)
+                elif section_key == "##QA_HIGHLIGHTS##":
+                    render_qa(placeholders[section_key], content)
+                else:
+                    render_section(placeholders[section_key], css_class, title, content)
+            else:
+                section_raw[section_key] += chunk
+                css_class, title = SECTION_LABELS[section_key]
+                placeholders[section_key].markdown(
                     f'<div class="{css_class}"><h3>{title}</h3>' +
-                    after.strip().replace("\n", "<br>") + "</div>",
+                    section_raw[section_key].strip().replace("\n", "<br>") + "</div>",
                     unsafe_allow_html=True,
                 )
+
+            # Rebuild combined raw in delimiter format for PII / email / stop-handler
+            raw = "\n".join(f"{d}\n{section_raw[d]}" for d in SECTION_DELIMITERS)
+            st.session_state.streaming_raw = raw
         # Apply PII obfuscation directly to model output
         if obfuscate_was:
             raw, pii_found_output, _ = obfuscate_pii(raw)
