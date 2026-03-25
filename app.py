@@ -557,14 +557,8 @@ _SECTION_INSTRUCTIONS = {
 }
 
 
-def build_section_prompt(transcript: str, length: str, section: str, consensus: str = "") -> str:
+def build_section_prompt(transcript: str, length: str, section: str) -> str:
     instruction = _SECTION_INSTRUCTIONS[section][length]
-    if section == "##FINANCIAL_SUMMARY##" and consensus.strip():
-        instruction = (
-            f"Consensus estimates to reference when stating beats/misses:\n{consensus.strip()}\n"
-            "Use these to explicitly state 'beat by $X' or 'missed by $X' where applicable.\n\n"
-            + instruction
-        )
     return f"{instruction}\n\nTranscript:\n{transcript}"
 
 
@@ -579,7 +573,7 @@ _RETRYABLE_ERRORS = (
 
 def _stream_section(section_key: str, transcript: str, length: str,
                     model: str, max_tokens: int, temperature: float,
-                    out: _queue.Queue, consensus: str = ""):
+                    out: _queue.Queue):
     """Stream one section in a background thread.
 
     Queue items: (section_key, chunk, is_done, error_str_or_None)
@@ -594,7 +588,7 @@ def _stream_section(section_key: str, transcript: str, length: str,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": build_section_prompt(transcript, length, section_key, consensus)}],
+                messages=[{"role": "user", "content": build_section_prompt(transcript, length, section_key)}],
             ) as stream:
                 for text in stream.text_stream:
                     out.put((section_key, text, False, None))
@@ -1350,11 +1344,6 @@ with col_settings:
         "should be kept internal."
     )
 
-    with st.expander("📊 Consensus Estimates (optional)"):
-        st.caption("Paste in sell-side consensus so the Financial Summary can state explicit beats/misses.")
-        consensus_revenue = st.text_input("Revenue consensus", placeholder="e.g. $1.52B")
-        consensus_eps     = st.text_input("EPS consensus",     placeholder="e.g. $2.97")
-
     # ── History ───────────────────────────────────────────────────────────────
     history = load_history()
     if history:
@@ -1469,12 +1458,6 @@ if run_btn and transcript_input.strip():
     st.session_state.pending_temperature  = temperature
     st.session_state.pending_max_tokens      = int(max_tokens_override)
     st.session_state.pending_company         = company_name
-    consensus_parts = []
-    if consensus_revenue.strip():
-        consensus_parts.append(f"Revenue: {consensus_revenue.strip()}")
-    if consensus_eps.strip():
-        consensus_parts.append(f"EPS: {consensus_eps.strip()}")
-    st.session_state.pending_consensus       = "\n".join(consensus_parts)
     st.session_state.pending_prior_transcript = prior_transcript_input.strip()
     st.session_state.running = True
     st.session_state.stop_requested = False
@@ -1491,7 +1474,6 @@ if st.session_state.get("pending_run") and st.session_state.running:
     temperature      = st.session_state.pending_temperature
     max_tokens_override = st.session_state.pending_max_tokens
     company_name      = st.session_state.pending_company
-    consensus_str     = st.session_state.get("pending_consensus", "")
     prior_transcript  = st.session_state.get("pending_prior_transcript", "")
 
     # PII map will be shown in the persistent output block after streaming
@@ -1541,7 +1523,6 @@ if st.session_state.get("pending_run") and st.session_state.running:
             threading.Thread(
                 target=_stream_section,
                 args=(delim, transcript, length, selected_model, section_max, temperature, q),
-                kwargs={"consensus": consensus_str},
                 daemon=True,
             ).start()
 

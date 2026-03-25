@@ -118,9 +118,6 @@ After a completed analysis, click **✉️ Generate Email Draft**:
 ### Fun animations
 Toggle wind streaks in the background — speed and colour themed per model tier. Off by default.
 
-### Consensus Estimates
-Optional expander in settings. Paste in sell-side Revenue and EPS consensus — the Financial Summary section will explicitly state "beat by $X" / "missed by $X" rather than relying on the transcript mentioning it.
-
 ### Quarter-over-Quarter Comparison
 Optional expander below the main transcript input. Upload or paste a prior quarter transcript — the five main sections always run on the current transcript only (normal output format is preserved). After they complete, two additional API calls generate an appended **📊 Quarter-over-Quarter Comparison** card:
 
