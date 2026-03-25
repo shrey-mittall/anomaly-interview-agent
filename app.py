@@ -142,6 +142,35 @@ st.markdown("""
     section[data-testid="stSidebar"] {
         background: rgba(11,14,23,0.90) !important;
     }
+
+    /* Section-title tooltip */
+    .tip {
+        position: relative;
+        cursor: help;
+        display: inline-block;
+    }
+    .tip::after {
+        content: attr(data-tip);
+        position: absolute;
+        bottom: calc(100% + 6px);
+        left: 0;
+        background: rgba(15,20,35,0.97);
+        color: #cbd5e1;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.5;
+        padding: 8px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.12);
+        width: 300px;
+        white-space: normal;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease;
+        z-index: 9999;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    }
+    .tip:hover::after { opacity: 1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -797,28 +826,41 @@ CONFIDENCE_COLORS = {"Low": "#ef4444", "Medium": "#f59e0b", "High": "#10b981"}
 CONFIDENCE_PCT    = {"Low": 33, "Medium": 66, "High": 100}
 
 
+SECTION_TOOLTIPS = {
+    "📋 Financial Summary":   "Key metrics reported vs. guidance or consensus mentioned on the call",
+    "🔭 Guidance":            "Forward-looking statements, changes from prior periods, notable caveats",
+    "💬 Q&A Highlights":      "3–5 most substantive analyst questions and management responses",
+    "🎯 Tone / Sentiment":    "Defensiveness, hedging, unusual optimism, or deflection — your judgment",
+    "⚡ Investment Takeaway": "One paragraph: if you're briefing a PM in 30 seconds, what's the single most important thing?",
+}
+
+
 def render_section(placeholder, css_class: str, title: str, content: str):
+    tip = SECTION_TOOLTIPS.get(title, "")
+    h3 = (f'<h3><span class="tip" data-tip="{tip}">{title}</span></h3>'
+          if tip else f'<h3>{title}</h3>')
     placeholder.markdown(
-        f'<div class="{css_class}"><h3>{title}</h3>{fmt(content)}</div>',
+        f'<div class="{css_class}">{h3}{fmt(content)}</div>',
         unsafe_allow_html=True,
     )
 
 
 def render_sentiment(placeholder, tone: str):
-    sentiment_match  = re.search(r'SENTIMENT:\s*\[?(\w+)\]?',  tone, re.IGNORECASE)
-    confidence_match = re.search(r'CONFIDENCE:\s*\[?(\w+)\]?', tone, re.IGNORECASE)
-    sentiment_val  = sentiment_match.group(1).strip()  if sentiment_match  else ""
-    confidence_val = confidence_match.group(1).strip() if confidence_match else ""
+    # Skip any formatting chars (**bold**, spaces, brackets) before the value word
+    sentiment_match  = re.search(r'SENTIMENT:[^A-Za-z\[]*\[?([A-Za-z]+)',  tone, re.IGNORECASE)
+    confidence_match = re.search(r'CONFIDENCE:[^A-Za-z\[]*\[?([A-Za-z]+)', tone, re.IGNORECASE)
+    sentiment_val  = sentiment_match.group(1).strip().capitalize()  if sentiment_match  else ""
+    confidence_val = confidence_match.group(1).strip().capitalize() if confidence_match else ""
     s_color = SENTIMENT_COLORS.get(sentiment_val, "#6b7280")
     c_color = CONFIDENCE_COLORS.get(confidence_val, "#6b7280")
     c_pct   = CONFIDENCE_PCT.get(confidence_val, 50)
     tone_body = re.sub(r'SENTIMENT:.*', '', tone)
     tone_body = re.sub(r'CONFIDENCE:.*', '', tone_body).strip()
     placeholder.markdown(
-        f'<div class="sentiment-card"><h3>🎯 Tone / Sentiment</h3>'
+        f'<div class="sentiment-card"><h3><span class="tip" data-tip="{SECTION_TOOLTIPS["🎯 Tone / Sentiment"]}">🎯 Tone / Sentiment</span></h3>'
         f'<div style="text-align:center;padding:24px 0 20px">'
         f'<div style="font-size:2.6rem;font-weight:900;letter-spacing:3px;color:{s_color};text-shadow:0 0 24px {s_color}66">{sentiment_val.upper() if sentiment_val else "—"}</div>'
-        f'<div style="margin-top:10px;font-size:0.85rem;color:#aaa;letter-spacing:2px;text-transform:uppercase">Analyst Confidence</div>'
+        f'<div style="margin-top:10px;font-size:0.85rem;color:#aaa;letter-spacing:2px;text-transform:uppercase">Management Confidence</div>'
         f'<div style="margin:8px auto 4px;width:180px;height:8px;background:rgba(255,255,255,0.1);border-radius:4px">'
         f'<div style="width:{c_pct}%;height:100%;background:{c_color};border-radius:4px;box-shadow:0 0 8px {c_color}"></div></div>'
         f'<div style="font-size:1rem;font-weight:700;color:{c_color}">{confidence_val or "—"}</div>'
@@ -831,7 +873,7 @@ def render_sentiment(placeholder, tone: str):
 
 def render_takeaway(placeholder, takeaway: str):
     placeholder.markdown(
-        '<div class="takeaway-card"><h3>⚡ Investment Takeaway</h3>' + fmt(takeaway) + '</div>',
+        f'<div class="takeaway-card"><h3><span class="tip" data-tip="{SECTION_TOOLTIPS["⚡ Investment Takeaway"]}">⚡ Investment Takeaway</span></h3>' + fmt(takeaway) + '</div>',
         unsafe_allow_html=True,
     )
 
@@ -852,7 +894,7 @@ def _clean_label(text: str) -> str:
 def render_qa(placeholder, qa_text: str):
     qa_items = parse_qa(qa_text)
     with placeholder.container():
-        st.markdown('<div class="section-card"><h3>💬 Q&A Highlights</h3>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-card"><h3><span class="tip" data-tip="{SECTION_TOOLTIPS["💬 Q&A Highlights"]}">💬 Q&A Highlights</span></h3>', unsafe_allow_html=True)
         for i, item in enumerate(qa_items, 1):
             analyst_label   = _clean_label(item['analyst'])   or 'Analyst'
             executive_label = _clean_label(item.get('executive') or '')
