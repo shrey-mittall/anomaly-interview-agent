@@ -766,13 +766,26 @@ def fmt(text: str) -> str:
 
 
 def plain(text: str) -> str:
-    """Strip markdown to clean plain text for email."""
+    """Strip markdown to clean plain text for email/export."""
     text = re.sub(r'##[A-Z0-9_]+##', '', text)
     text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'\*\*\*(.*?)\*\*\*', r'\1', text)
     text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
     text = re.sub(r'\*(.*?)\*', r'\1', text)
-    text = re.sub(r'^[-*•]\s+', '• ', text, flags=re.MULTILINE)
+    # Strip markdown table separator rows (|---|---|)
+    text = re.sub(r'^\|[\s|:-]+\|$', '', text, flags=re.MULTILINE)
+    # Convert table data rows: | A | B | C | -> "A   B   C"
+    def _table_row(m):
+        cols = [c.strip() for c in m.group(1).split('|') if c.strip()]
+        return '   '.join(cols)
+    text = re.sub(r'^\|(.+)\|$', _table_row, text, flags=re.MULTILINE)
+    # Normalize bullets to ASCII dash
+    text = re.sub(r'^[\-*•]\s+', '- ', text, flags=re.MULTILINE)
+    # Replace common Unicode with ASCII equivalents
+    for ch, rep in {'\u2014':'--','\u2013':'-','\u2012':'-','\u2018':"'",'\u2019':"'",
+                    '\u201c':'"','\u201d':'"','\u2022':'-','\u2500':'-','\u2192':'->',
+                    '\u2026':'...','\u00a0':' ','\u200b':'','\u00b7':'-'}.items():
+        text = text.replace(ch, rep)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -841,42 +854,86 @@ def _pdf_safe(text: str) -> str:
     return "".join(c if (32 <= ord(c) <= 126) or (160 <= ord(c) <= 255) else "?" for c in text)
 
 
+_SECTION_PDF_COLORS = {
+    "##FINANCIAL_SUMMARY##":   (59,  130, 246),   # blue
+    "##GUIDANCE##":            (14,  165, 233),   # sky
+    "##QA_HIGHLIGHTS##":       (139,  92, 246),   # violet
+    "##TONE_SENTIMENT##":      (245, 158,  11),   # amber
+    "##INVESTMENT_TAKEAWAY##": (16,  185, 129),   # emerald
+}
+
+
 def generate_pdf(sections: dict, company: str, ts: str, model_label: str) -> bytes:
+    import textwrap
     if not _PDF_AVAILABLE:
         return b""
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
 
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 12, _pdf_safe(f"Earnings Analysis - {company or 'Unknown'}"), ln=True)
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+    margin = pdf.l_margin
+    page_w = pdf.epw  # effective page width
+
+    # ── Cover header ──────────────────────────────────────────────────────────
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_text_color(20, 20, 40)
+    pdf.multi_cell(page_w, 10, _pdf_safe(company or "Earnings Analysis"), align="L")
     pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 6, _pdf_safe(f"{ts}  |  {model_label.split('(')[0].strip()}"), ln=True)
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(6)
+    pdf.set_text_color(110, 110, 130)
+    pdf.cell(page_w, 6, _pdf_safe(f"{ts}   ·   {model_label.split('(')[0].strip()}"), ln=True)
+    pdf.ln(2)
+    # Full-width rule
+    pdf.set_draw_color(200, 200, 215)
+    pdf.set_line_width(0.4)
+    pdf.line(margin, pdf.get_y(), margin + page_w, pdf.get_y())
+    pdf.ln(8)
 
     for delim, title in _SECTION_PDF_TITLES.items():
         content = _pdf_safe(plain(sections.get(delim, "")).strip())
         if not content:
             continue
+
+        r, g, b = _SECTION_PDF_COLORS.get(delim, (80, 80, 80))
+
+        # Coloured left-bar accent (4 pt wide rect)
+        bar_h = 8
+        y_before = pdf.get_y()
+        pdf.set_fill_color(r, g, b)
+        pdf.rect(margin, y_before, 3, bar_h, style="F")
+
+        # Section title
+        pdf.set_x(margin + 5)
         pdf.set_font("Helvetica", "B", 13)
-        pdf.set_fill_color(240, 242, 248)
-        pdf.cell(0, 8, title, ln=True, fill=True)
-        pdf.ln(2)
+        pdf.set_text_color(r, g, b)
+        pdf.cell(page_w - 5, bar_h, _pdf_safe(title.upper()), ln=True)
+        pdf.ln(3)
+
+        # Body text
         pdf.set_font("Helvetica", "", 10)
-        import textwrap
+        pdf.set_text_color(30, 30, 40)
         for line in content.splitlines():
-            if not line.strip():
+            stripped = line.strip()
+            if not stripped:
                 pdf.ln(3)
                 continue
-            for subline in textwrap.wrap(line, width=90, break_long_words=True, break_on_hyphens=True) or [line[:90]]:
-                pdf.set_x(pdf.l_margin)
+            # Indent bullet lines
+            is_bullet = stripped.startswith(("-", "•", "*"))
+            indent = margin + 6 if is_bullet else margin
+            wrap_width = 88 if not is_bullet else 85
+            wrapped = textwrap.wrap(stripped, width=wrap_width, break_long_words=True) or [stripped[:wrap_width]]
+            for subline in wrapped:
+                pdf.set_x(indent)
                 try:
-                    pdf.multi_cell(pdf.epw, 5, subline)
+                    pdf.multi_cell(page_w - (indent - margin), 5, subline)
                 except Exception:
-                    pass  # skip any line that still can't render
-        pdf.ln(5)
+                    pass
+
+        pdf.ln(6)
+        # Light divider between sections
+        pdf.set_draw_color(220, 220, 230)
+        pdf.set_line_width(0.2)
+        pdf.line(margin, pdf.get_y(), margin + page_w, pdf.get_y())
+        pdf.ln(6)
 
     return bytes(pdf.output())
 
@@ -1137,7 +1194,13 @@ with col_settings:
         value="Standard",
     )
 
-    obfuscate = st.checkbox("Obfuscate PII (names, firms, contacts)")
+    obfuscate = st.checkbox("Hide Names")
+    st.caption(
+        "Replaces executive and analyst names with tokens (e.g. [EXECUTIVE_1]). "
+        "Earnings calls are public, but this feature exists for cases where the tool "
+        "is used on private or pre-release call transcripts where name attribution "
+        "should be kept internal."
+    )
 
     with st.expander("📊 Consensus Estimates (optional)"):
         st.caption("Paste in sell-side consensus so the Financial Summary can state explicit beats/misses.")
@@ -1545,35 +1608,35 @@ if not st.session_state.get("running") and st.session_state.get("last_sections")
 
         co = (meta[2] if meta else "") or "the company"
 
-        body_lines = [
-            plain(sections.get("##INVESTMENT_TAKEAWAY##", "")),
-            "",
-            "─── Financials " + "─" * 33,
-            "",
-            plain(sections.get("##FINANCIAL_SUMMARY##", "")),
-            "",
-            "─── Guidance " + "─" * 35,
-            "",
-            plain(sections.get("##GUIDANCE##", "")),
-            "",
-            "─── Tone " + "─" * 39,
-            "",
-            tone_body,
-        ]
+        def _section_block(header: str, content: str) -> list:
+            return ["", f"[ {header.upper()} ]", "-" * 48, "", content, ""]
+
+        body_lines = (
+            [plain(sections.get("##INVESTMENT_TAKEAWAY##", "")), ""]
+            + _section_block("Financial Summary", plain(sections.get("##FINANCIAL_SUMMARY##", "")))
+            + _section_block("Guidance",          plain(sections.get("##GUIDANCE##", "")))
+            + _section_block("Tone / Sentiment",  tone_body)
+        )
         if sentiment_label:
-            body_lines += ["", f"Sentiment: {sentiment_label}" + (f"   |   Confidence: {confidence_label}" if confidence_label else "")]
+            body_lines += [f"Sentiment: {sentiment_label}" + (f"   |   Confidence: {confidence_label}" if confidence_label else ""), ""]
         body_lines += ["", "Best,", "Research Team"]
 
         st.session_state.email_to      = ""
         st.session_state.email_from    = "Research Team"
-        st.session_state.email_subject = f"Earnings Call Summary — {co}"
+        st.session_state.email_subject = f"Earnings Call Summary - {co}"
         st.session_state.email_body    = "\n".join(body_lines)
         st.session_state.last_email    = True   # flag to show compose UI
 
     if st.session_state.get("last_email") and st.session_state.get("last_sections"):
-        st.markdown('<div class="email-card">', unsafe_allow_html=True)
-        st.markdown("### ✉️ Email Draft")
-
+        st.markdown(
+            '<div style="border-left:4px solid #3b82f6;border-radius:6px;'
+            'background:rgba(59,130,246,0.06);padding:20px 24px;margin-bottom:18px">'
+            '<p style="font-size:11px;font-weight:800;letter-spacing:3px;'
+            'text-transform:uppercase;color:#3b82f6;margin:0 0 16px 0;'
+            'padding-bottom:10px;border-bottom:1px solid rgba(59,130,246,0.3)">'
+            '✉️ Email Draft</p></div>',
+            unsafe_allow_html=True,
+        )
         hcol1, hcol2 = st.columns([1, 1])
         with hcol1:
             st.text_input("To", key="email_to", placeholder="portfolio.manager@fund.com")
@@ -1588,9 +1651,8 @@ if not st.session_state.get("running") and st.session_state.get("last_sections")
             f"Subject: {st.session_state.get('email_subject', '')}\n\n"
             f"{body}"
         )
-        st.markdown('</div>', unsafe_allow_html=True)
         st.download_button(
-            label="⬇ Download email",
+            label="⬇ Download email (.txt)",
             data=full_email,
             file_name=f"email_draft_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
             mime="text/plain",

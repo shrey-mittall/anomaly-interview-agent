@@ -90,8 +90,8 @@ Three tiers, selectable from the sidebar:
 ### Response length
 Slider: **Concise** (2k tokens) / **Standard** (4k tokens) / **Detailed** (8k tokens)
 
-### PII Obfuscation
-Optional checkbox. When enabled:
+### Hide Names
+Optional checkbox. Earnings calls are public records, but this feature exists for cases where the tool is used on private or pre-release transcripts where name attribution should be kept internal. When enabled:
 - Runs on the model's output — catches every name actually written in the analysis
 - Executives matched by title context (`CEO John Smith`, `John Smith — Chief Executive Officer`, etc.)
 - Analysts matched by firm context (`Jane Doe — Goldman Sachs`, `Jane Doe from Morgan Stanley`, etc.)
@@ -99,7 +99,7 @@ Optional checkbox. When enabled:
 - Tokens numbered: `[EXECUTIVE_1]`, `[ANALYST_1]`, etc.
 - Structured signal lines (`SENTIMENT:`, `CONFIDENCE:`) are protected from replacement so the Tone/Sentiment display always renders correctly
 - Q&A section: bracket tokens are escaped in expander labels and stripped of stray `**` bold markers before display, so `[ANALYST_1]` renders cleanly in all contexts
-- **PII Redaction Map** expander shows every token → real name mapping with colour coding
+- **Name Map** expander shows every token → real name mapping with colour coding
 
 ### Email Draft
 After a completed analysis, click **✉️ Generate Email Draft**:
