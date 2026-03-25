@@ -290,9 +290,9 @@ def inject_theme(info: dict):
     )
 
 LENGTH_SETTINGS = {
-    "Concise":  {"desc": "Bullet-point brevity. Skip elaboration.",        "max_tokens": 2048},
-    "Standard": {"desc": "Balanced depth. Normal analyst brief.",          "max_tokens": 4096},
-    "Detailed": {"desc": "Full depth. Include all caveats and nuance.",    "max_tokens": 8192},
+    "Concise":  {"max_tokens": 1024},
+    "Standard": {"max_tokens": 2048},
+    "Detailed": {"max_tokens": 4096},
 }
 
 # Rough chars-per-token estimate for English prose
@@ -425,12 +425,8 @@ SECTION_DELIMITERS = [
     "##INVESTMENT_TAKEAWAY##",
 ]
 
-def build_user_prompt(transcript: str, length: str) -> str:
-    length_instruction = LENGTH_SETTINGS[length]["desc"]
-
+def build_user_prompt(transcript: str) -> str:
     return f"""Analyze the following earnings call transcript. Output exactly five sections using the delimiter tags shown. No preamble, no extra commentary — only the sections below.
-
-Length guidance: {length_instruction}
 
 ##FINANCIAL_SUMMARY##
 Key reported metrics — revenue (actual vs consensus/guidance), EBITDA margin, EPS, free cash flow. Note beats and misses explicitly. Use **bold** for key numbers and beat/miss labels.
@@ -473,54 +469,103 @@ def get_client():
 
 
 # ── Per-section prompts (used for parallel inferencing) ───────────────────────
+_QA_FORMAT = (
+    "Number each block and separate with ---. Use exactly this format:\n"
+    "Q1\nANALYST: [full name — firm, exactly as in transcript]\n"
+    "EXECUTIVE: [full name — title, exactly as in transcript]\n"
+    "QUESTION: {q}\nRESPONSE: {r}\n---"
+)
+_SENTIMENT_FOOTER = (
+    "\nEnd with these two lines exactly (no brackets, no bold, just the word):\n"
+    "SENTIMENT: Bearish\n...or Cautious, Neutral, Constructive, Bullish — pick one.\n"
+    "CONFIDENCE: Low\n...or Medium, High — pick one."
+)
+
 _SECTION_INSTRUCTIONS = {
-    "##FINANCIAL_SUMMARY##": (
-        "Write the financial summary for this earnings call.\n"
-        "Cover key reported metrics — revenue (actual vs consensus/guidance), EBITDA margin, EPS, free cash flow. "
-        "Note beats and misses explicitly. Use **bold** for key numbers and beat/miss labels. "
-        "Use real names of executives when relevant."
-    ),
-    "##GUIDANCE##": (
-        "Write the guidance section for this earnings call.\n"
-        "Cover forward-looking statements only — revised full-year guidance, Q4 specifics, "
-        "segment-level commentary, notable caveats. Flag meaningful changes from prior guidance."
-    ),
-    "##QA_HIGHLIGHTS##": (
-        "Write the Q&A highlights for this earnings call.\n"
-        "3 to 5 Q&A exchanges. Number each block and separate with ---. Use exactly this format:\n"
-        "Q1\nANALYST: [full name — firm, exactly as in transcript]\n"
-        "EXECUTIVE: [full name — title, exactly as in transcript]\n"
-        "QUESTION: [1-2 sentence paraphrase]\nRESPONSE: [2-4 sentences, include numbers/commitments, note if evasive]\n"
-        "---"
-    ),
-    "##TONE_SENTIMENT##": (
-        "Write the tone/sentiment section for this earnings call.\n"
-        "Qualitative read of management tone — overall posture, hedging/deflection, moments of unusual confidence, "
-        "contrast between prepared remarks and Q&A tone.\n"
-        "End with these two lines exactly (no brackets, just the word):\n"
-        "SENTIMENT: Bearish\n"
-        "...or Cautious, Neutral, Constructive, Bullish — pick one.\n"
-        "CONFIDENCE: Low\n"
-        "...or Medium, High — pick one."
-    ),
-    "##INVESTMENT_TAKEAWAY##": (
-        "Write the investment takeaway for this earnings call.\n"
-        "One paragraph (4-6 sentences). Key driver of miss/beat, thesis implications, "
-        "biggest open question, instinct on stock reaction."
-    ),
+    "##FINANCIAL_SUMMARY##": {
+        "Concise": (
+            "Write a concise financial summary. 3-5 bullets only — numbers and beat/miss labels, no prose.\n"
+            "Format each bullet as: '- Metric: $X vs $Y est — BEAT/MISS'\n"
+            "Bold key numbers. Skip anything without a hard number."
+        ),
+        "Standard": (
+            "Write a financial summary as tight bullets — one per key metric (revenue, EBITDA margin, EPS, FCF, leverage).\n"
+            "Bold key numbers. Flag beats/misses with amounts.\n"
+            "End with a single **TL;DR:** line summarising the print in one sentence."
+        ),
+        "Detailed": (
+            "Write a thorough financial summary. Cover revenue (actual vs consensus/guidance), EBITDA margin, EPS, "
+            "free cash flow, segment breakdown, balance sheet highlights. Note beats and misses with exact amounts. "
+            "Bold key numbers and beat/miss labels. Include segment-level colour and any notable one-time items."
+        ),
+    },
+    "##GUIDANCE##": {
+        "Concise": (
+            "2-3 bullets on guidance changes only. Numbers and direction — skip anything unchanged or reaffirmed without change."
+        ),
+        "Standard": (
+            "Bullet list of guidance changes — revised full-year and Q4 ranges, key segment commentary, notable caveats.\n"
+            "Bold changed numbers. End with one **Bottom line:** sentence on what the guidance revision means."
+        ),
+        "Detailed": (
+            "Full guidance section — revised full-year and Q4 ranges, segment-level commentary, changes from prior guidance, "
+            "notable caveats and conditions management attached. Flag any meaningful raises or cuts explicitly."
+        ),
+    },
+    "##QA_HIGHLIGHTS##": {
+        "Concise": (
+            "3-5 Q&A exchanges — the most important ones.\n"
+            + _QA_FORMAT.format(q="[one sentence]", r="[one sentence — key point only]")
+        ),
+        "Standard": (
+            "3-5 Q&A exchanges — pick the most substantive.\n"
+            + _QA_FORMAT.format(q="[1 sentence]", r="[2 sentences max — include any number or commitment, note if evasive]")
+        ),
+        "Detailed": (
+            "4-5 Q&A exchanges.\n"
+            + _QA_FORMAT.format(q="[1-2 sentence paraphrase]", r="[2-4 sentences — include numbers/commitments, note evasiveness]")
+        ),
+    },
+    "##TONE_SENTIMENT##": {
+        "Concise": (
+            "2-3 sentences on management tone — the single most notable thing (defensive, unusually confident, hedging, etc.)."
+            + _SENTIMENT_FOOTER
+        ),
+        "Standard": (
+            "Short paragraph (3-4 sentences) — overall posture, key contrast between prepared remarks and Q&A, "
+            "any notable hedging or deflection."
+            + _SENTIMENT_FOOTER
+        ),
+        "Detailed": (
+            "Full tone analysis — overall posture, hedging/deflection patterns, moments of unusual confidence or candour, "
+            "contrast between prepared remarks and Q&A tone, any tells."
+            + _SENTIMENT_FOOTER
+        ),
+    },
+    "##INVESTMENT_TAKEAWAY##": {
+        "Concise": (
+            "2 sentences maximum. What happened and what it means for the stock. Direct and opinionated — no hedging."
+        ),
+        "Standard": (
+            "3-4 sentences. Key driver of miss/beat, thesis implication, biggest open question. Direct and opinionated."
+        ),
+        "Detailed": (
+            "One paragraph (4-6 sentences). Key driver of miss/beat, thesis implications, biggest open question, "
+            "instinct on stock reaction. Be direct and opinionated."
+        ),
+    },
 }
 
 
 def build_section_prompt(transcript: str, length: str, section: str, consensus: str = "") -> str:
-    length_instruction = LENGTH_SETTINGS[length]["desc"]
-    instruction = _SECTION_INSTRUCTIONS[section]
+    instruction = _SECTION_INSTRUCTIONS[section][length]
     if section == "##FINANCIAL_SUMMARY##" and consensus.strip():
         instruction = (
             f"Consensus estimates to reference when stating beats/misses:\n{consensus.strip()}\n"
             "Use these to explicitly state 'beat by $X' or 'missed by $X' where applicable.\n\n"
             + instruction
         )
-    return f"Length guidance: {length_instruction}\n\n{instruction}\n\nTranscript:\n{transcript}"
+    return f"{instruction}\n\nTranscript:\n{transcript}"
 
 
 _MAX_RETRIES      = 3
@@ -1171,7 +1216,7 @@ with col_main:
 with col_settings:
     st.markdown("### Settings")
 
-    company_name = st.text_input("Company name (optional)", placeholder="e.g. MIDT")
+    company_name = ""
 
     model_label = st.selectbox("Model", list(MODELS.keys()), index=0)
     selected_model = MODELS[model_label]

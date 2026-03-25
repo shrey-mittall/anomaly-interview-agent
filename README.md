@@ -88,7 +88,15 @@ Three tiers, selectable from the sidebar:
 - **⏹ Stop Analysis** appears during inference — stops the stream and preserves whatever has been generated so far
 
 ### Response length
-Slider: **Concise** (2k tokens) / **Standard** (4k tokens) / **Detailed** (8k tokens)
+Three modes, controlled by a slider. Length is enforced through prompt instructions — token budgets are generous enough to never truncate an answer.
+
+| Mode | Format |
+|---|---|
+| **Concise** | 3-5 bullets per section, numbers and key points only, 2-sentence takeaway |
+| **Standard** | Tight bullets with a TL;DR / Bottom line per section, 3-4 sentence takeaway |
+| **Detailed** | Full depth — segment breakdown, all caveats, 4-6 sentence takeaway |
+
+Q&A always produces 3-5 exchanges regardless of mode; only the response length per exchange varies. Company name field removed — the tool reads company identity from the transcript.
 
 ### Hide Names
 Optional checkbox. Earnings calls are public records, but this feature exists for cases where the tool is used on private or pre-release transcripts where name attribution should be kept internal. When enabled:
