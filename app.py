@@ -959,7 +959,7 @@ with col_main:
             "Fetch from URL",
             placeholder="https://company.com/ir/transcript.html  (plain HTML only — JS-rendered sites won't work)",
             label_visibility="collapsed",
-            key="transcript_url",
+            key=f"transcript_url_{st.session_state.get('_url_input_key', 0)}",
         )
     with btn_col:
         fetch_btn = st.button("Fetch", disabled=not transcript_url.strip(), use_container_width=True)
@@ -999,7 +999,8 @@ with col_main:
             if file_content:
                 st.session_state.transcript_input = file_content
                 st.session_state._loaded_file = uploaded_file.name
-                st.session_state.transcript_url = ""   # clear URL field
+                # Bump URL input key to reset the URL field widget
+                st.session_state._url_input_key = st.session_state.get("_url_input_key", 0) + 1
                 st.rerun()
     else:
         # File removed — reset tracking so the same file can be re-uploaded
