@@ -39,25 +39,18 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── Base CSS (dark theme) ─────────────────────────────────────────────────────
+# ── Base CSS (theme-adaptive) ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-    body { background-color: #0b0e17 !important; }
-    .stApp { background: transparent !important; }
-    section[data-testid="stSidebar"] { background: rgba(11,14,23,0.85) !important; }
-    .stApp * { color: #dde3ef; }
-    h1, h2, h3, label, .stMarkdown p { color: #dde3ef !important; }
-
     .section-card {
-        background: rgba(255,255,255,0.04);
+        background: rgba(59,130,246,0.07);
         border-left: 4px solid #3b82f6;
         border-radius: 6px;
         padding: 16px 20px;
         margin-bottom: 18px;
         backdrop-filter: blur(4px);
     }
-    .section-card, .section-card * { color: #dde3ef !important; }
-    .section-card h3 { margin-top: 0; color: #60a5fa !important; font-size: 15px; }
+    .section-card h3 { margin-top: 0; color: #3b82f6 !important; font-size: 15px; }
 
     .takeaway-card {
         background: rgba(16,185,129,0.07);
@@ -66,8 +59,7 @@ st.markdown("""
         padding: 16px 20px;
         margin-bottom: 18px;
     }
-    .takeaway-card, .takeaway-card * { color: #dde3ef !important; }
-    .takeaway-card h3 { color: #34d399 !important; font-size: 15px; margin-top: 0; }
+    .takeaway-card h3 { color: #10b981 !important; font-size: 15px; margin-top: 0; }
 
     .sentiment-card {
         border-left: 4px solid #f59e0b;
@@ -76,8 +68,7 @@ st.markdown("""
         padding: 16px 20px;
         margin-bottom: 18px;
     }
-    .sentiment-card, .sentiment-card * { color: #dde3ef !important; }
-    .sentiment-card h3 { color: #fbbf24 !important; font-size: 15px; margin-top: 0; }
+    .sentiment-card h3 { color: #d97706 !important; font-size: 15px; margin-top: 0; }
 
     .qoq-card {
         background: rgba(139,92,246,0.07);
@@ -86,12 +77,11 @@ st.markdown("""
         padding: 16px 20px;
         margin-bottom: 18px;
     }
-    .qoq-card, .qoq-card * { color: #dde3ef !important; }
-    .qoq-card h3 { color: #a78bfa !important; font-size: 15px; margin-top: 0; }
+    .qoq-card h3 { color: #7c3aed !important; font-size: 15px; margin-top: 0; }
 
     .history-card {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(128,128,128,0.06);
+        border: 1px solid rgba(128,128,128,0.2);
         border-radius: 6px;
         padding: 10px 14px;
         margin-bottom: 8px;
@@ -99,28 +89,24 @@ st.markdown("""
     }
 
     .email-card {
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.1);
+        background: rgba(128,128,128,0.05);
+        border: 1px solid rgba(128,128,128,0.2);
         border-radius: 6px;
         padding: 20px 24px;
         margin-bottom: 18px;
     }
-    .email-card, .email-card * { color: #dde3ef !important; }
-    .email-card h3 { margin-top: 0; color: #93c5fd !important; font-size: 15px; }
+    .email-card h3 { margin-top: 0; color: #3b82f6 !important; font-size: 15px; }
 
     .meta-bar {
         font-size: 12px;
-        color: #6b7280 !important;
         margin-bottom: 24px;
-        border-bottom: 1px solid rgba(255,255,255,0.08);
+        border-bottom: 1px solid rgba(128,128,128,0.2);
         padding-bottom: 10px;
+        opacity: 0.7;
     }
     .stTextArea textarea {
         font-family: monospace;
         font-size: 13px;
-        background: rgba(255,255,255,0.04) !important;
-        color: #dde3ef !important;
-        border: 1px solid rgba(255,255,255,0.1) !important;
     }
 
     /* wind behind content, above body */
@@ -132,15 +118,19 @@ st.markdown("""
         overflow: hidden;
         z-index: 0;
     }
-    /* content panel blocks wind visually */
     .main .block-container {
         position: relative;
         z-index: 1;
-        background: rgba(11,14,23,0.88);
         border-radius: 12px;
     }
-    section[data-testid="stSidebar"] {
-        background: rgba(11,14,23,0.90) !important;
+
+    /* Dark-mode accent overrides — richer colours on dark bg */
+    @media (prefers-color-scheme: dark) {
+        .section-card h3  { color: #60a5fa !important; }
+        .takeaway-card h3 { color: #34d399 !important; }
+        .sentiment-card h3 { color: #fbbf24 !important; }
+        .qoq-card h3      { color: #a78bfa !important; }
+        .email-card h3    { color: #93c5fd !important; }
     }
 
     /* Section-title tooltip */
@@ -171,6 +161,14 @@ st.markdown("""
         box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     }
     .tip:hover::after { opacity: 1; }
+    @media (prefers-color-scheme: light) {
+        .tip::after {
+            background: rgba(255,255,255,0.98);
+            color: #1e293b;
+            border-color: rgba(0,0,0,0.12);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -897,7 +895,7 @@ def render_sentiment(placeholder, tone: str):
         f'<div style="text-align:center;padding:24px 0 20px">'
         f'<div style="font-size:2.6rem;font-weight:900;letter-spacing:3px;color:{s_color};text-shadow:0 0 24px {s_color}66">{sentiment_val.upper() if sentiment_val else "—"}</div>'
         f'<div style="margin-top:10px;font-size:0.85rem;color:#aaa;letter-spacing:2px;text-transform:uppercase">Management Confidence</div>'
-        f'<div style="margin:8px auto 4px;width:180px;height:8px;background:rgba(255,255,255,0.1);border-radius:4px">'
+        f'<div style="margin:8px auto 4px;width:180px;height:8px;background:rgba(128,128,128,0.2);border-radius:4px">'
         f'<div style="width:{c_pct}%;height:100%;background:{c_color};border-radius:4px;box-shadow:0 0 8px {c_color}"></div></div>'
         f'<div style="font-size:1rem;font-weight:700;color:{c_color}">{confidence_val or "—"}</div>'
         f'</div>'

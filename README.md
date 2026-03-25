@@ -57,6 +57,9 @@ Opens at `http://localhost:8501`.
 - **Fetch from URL** — paste a link to a plain HTML transcript page and click Fetch; JS-rendered or login-gated pages (e.g. Seeking Alpha) will not work
 - Optional company name/ticker for labelling output
 
+### Light / dark mode
+The app adapts to Streamlit's built-in theme toggle. All card styles use tinted semi-transparent backgrounds and saturated accent colors that are readable in both modes. No dark-only overrides are forced on the base background or text — Streamlit's theme controls those natively.
+
 ### Keyboard shortcut
 **Cmd+Enter** (Mac) / **Ctrl+Enter** (Windows) triggers Run Analysis from anywhere on the page.
 
