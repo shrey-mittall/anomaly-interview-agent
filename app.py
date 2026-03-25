@@ -571,6 +571,29 @@ Total response: under 300 words. Skip anything unchanged."""
             yield text
 
 
+def run_qa_question(transcript: str, question: str, history: list, model: str) -> str:
+    """Answer a grounded question about the transcript. Non-streaming."""
+    system = (
+        "You are a senior analyst answering questions about a specific earnings call transcript. "
+        "Answer ONLY based on what is explicitly stated in the transcript. "
+        "Quote directly when the answer depends on exact wording. "
+        "If the topic is not mentioned in the transcript, say so clearly. "
+        "Be concise — 2-4 sentences unless a longer answer is genuinely needed."
+    )
+    messages = []
+    for turn in history:
+        messages.append({"role": "user",      "content": turn["q"]})
+        messages.append({"role": "assistant", "content": turn["a"]})
+    messages.append({"role": "user", "content": f"Transcript:\n\n{transcript}\n\n---\n\nQuestion: {question}"})
+    resp = get_client().messages.create(
+        model=model,
+        max_tokens=1024,
+        system=system,
+        messages=messages,
+    )
+    return resp.content[0].text.strip()
+
+
 # ── Parsing helpers ───────────────────────────────────────────────────────────
 def parse_sections(raw: str) -> dict:
     """Split raw model output into sections by delimiter tags."""
@@ -1185,7 +1208,7 @@ if run_btn and transcript_input.strip():
         )
 
     # Clear previous output so stale results don't flash before new ones arrive
-    for k in ("last_raw", "last_sections", "last_elapsed", "last_meta", "last_stopped", "last_pii_found", "last_email", "generate_email", "last_qoq", "pending_qoq"):
+    for k in ("last_raw", "last_sections", "last_elapsed", "last_meta", "last_stopped", "last_pii_found", "last_email", "generate_email", "last_qoq", "pending_qoq", "last_transcript", "qa_history"):
         st.session_state.pop(k, None)
 
     st.session_state.pending_run           = True
@@ -1365,6 +1388,7 @@ if st.session_state.get("pending_run") and st.session_state.running:
 
         st.session_state.running             = False
         st.session_state.last_raw            = raw
+        st.session_state.last_transcript     = transcript
         st.session_state.last_elapsed        = elapsed
         st.session_state.last_sections       = sections
         st.session_state.last_meta           = (ts, model_label, company_name)
@@ -1587,6 +1611,58 @@ elif st.session_state.get("last_qoq") and not st.session_state.get("running"):
         fmt(st.session_state.last_qoq) + "</div>",
         unsafe_allow_html=True,
     )
+
+# ── Ask a question about the transcript ───────────────────────────────────────
+if st.session_state.get("last_raw") and not st.session_state.get("running"):
+    st.divider()
+    qa_history = st.session_state.get("qa_history", [])
+
+    hdr_col, clr_col = st.columns([8, 1])
+    with hdr_col:
+        st.markdown("### 💬 Ask a Question")
+    with clr_col:
+        if qa_history and st.button("Clear", key="qa_clear", type="secondary"):
+            st.session_state.qa_history = []
+            st.rerun()
+
+    # Render prior turns
+    for turn in qa_history:
+        st.markdown(f"**Q: {turn['q']}**")
+        st.markdown(
+            f'<div class="section-card" style="padding:14px 18px;margin-bottom:12px">{fmt(turn["a"])}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Input row
+    col_q, col_btn = st.columns([5, 1])
+    with col_q:
+        user_q = st.text_input(
+            "qa_question_label",
+            placeholder="Ask anything about this transcript...",
+            label_visibility="collapsed",
+            key="qa_input",
+        )
+    with col_btn:
+        ask_btn = st.button("Ask →", key="qa_ask")
+
+    if ask_btn and user_q.strip():
+        _qa_transcript = st.session_state.get("last_transcript", "")
+        _qa_label      = (st.session_state.get("last_meta") or (None, None, None))[1]
+        _qa_model      = MODELS.get(_qa_label, list(MODELS.values())[1])
+        with st.spinner("Thinking..."):
+            try:
+                answer = run_qa_question(
+                    transcript=_qa_transcript,
+                    question=user_q.strip(),
+                    history=st.session_state.get("qa_history", []),
+                    model=_qa_model,
+                )
+                if "qa_history" not in st.session_state:
+                    st.session_state.qa_history = []
+                st.session_state.qa_history.append({"q": user_q.strip(), "a": answer})
+            except Exception as _qa_err:
+                st.error(f"Error: {_qa_err}")
+        st.rerun()
 
 # ── History comparison (loaded from sidebar) ──────────────────────────────────
 if st.session_state.get("compare_sections") and not st.session_state.get("running"):

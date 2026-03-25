@@ -122,6 +122,14 @@ The QoQ prompt enforces **2-3 bullets per section, under 300 words** and uses 1,
 ### Cross-Transcript Memory
 Every completed analysis is automatically saved to `transcript_history.json` (up to 50 entries). The **📚 History** expander in the settings panel lists past runs by company and date. Clicking **Load** on any entry opens a **side-by-side comparison view** — current run on the left, loaded run on the right — showing Guidance, Tone/Sentiment, and Investment Takeaway for both. History can be cleared at any time.
 
+### Transcript Q&A
+After a completed analysis, a **💬 Ask a Question** panel appears below the output. Type any question about the transcript and get a grounded answer — the model is instructed to answer only from what the transcript explicitly states and to quote directly when the answer depends on exact wording. If something isn't mentioned, it says so.
+
+- **Multi-turn**: follow-up questions carry prior Q&A context, so you can drill down
+- **Same model** as the main analysis run
+- **Clear** button resets the Q&A history without affecting the analysis output
+- History clears automatically when a new analysis is run
+
 ### Section tooltips
 Each section heading (`Financial Summary`, `Guidance`, etc.) shows a hover tooltip with the exact brief description of what that section covers. Implemented as a CSS `::after` tooltip (instant on hover, dark-themed) rather than the native browser `title=` attribute.
 
