@@ -959,9 +959,12 @@ with col_main:
             "Fetch from URL",
             placeholder="https://company.com/ir/transcript.html  (plain HTML only — JS-rendered sites won't work)",
             label_visibility="collapsed",
+            key="transcript_url",
         )
     with btn_col:
         fetch_btn = st.button("Fetch", disabled=not transcript_url.strip(), use_container_width=True)
+
+    # URL fetch — always takes precedence; resets file uploader on success
     if fetch_btn and transcript_url.strip():
         with st.spinner("Fetching transcript..."):
             fetched, err = scrape_transcript(transcript_url.strip())
@@ -969,26 +972,39 @@ with col_main:
             st.error(f"Could not fetch: {err}")
         else:
             st.session_state.transcript_input = fetched
-            st.caption(f"Fetched {len(fetched):,} chars from URL.")
+            # Bump key to clear the file uploader widget
+            st.session_state._file_upload_key = st.session_state.get("_file_upload_key", 0) + 1
+            st.session_state._loaded_file = None
+            st.rerun()
 
+    # File uploader — only populates text area when a NEW file is dropped
     uploaded_file = st.file_uploader(
-        "Upload transcript (.txt, .md, .csv, .pdf)", type=["txt", "md", "csv", "pdf"]
+        "Upload transcript (.txt, .md, .csv, .pdf)", type=["txt", "md", "csv", "pdf"],
+        key=f"transcript_file_{st.session_state.get('_file_upload_key', 0)}",
     )
-    file_content = ""
     if uploaded_file:
-        if uploaded_file.type == "application/pdf":
-            try:
-                from pypdf import PdfReader
-                from io import BytesIO
-                reader = PdfReader(BytesIO(uploaded_file.read()))
-                file_content = "\n".join(p.extract_text() or "" for p in reader.pages)
-            except ImportError:
-                st.error("PDF support requires pypdf: `pip install pypdf`")
-        else:
-            file_content = uploaded_file.read().decode("utf-8", errors="ignore")
-        if file_content:
-            st.session_state.transcript_input = file_content
-            st.caption(f"Loaded: {uploaded_file.name} ({len(file_content):,} chars)")
+        if uploaded_file.name != st.session_state.get("_loaded_file"):
+            # New file — read it, populate text area, clear URL field
+            if uploaded_file.type == "application/pdf":
+                try:
+                    from pypdf import PdfReader
+                    from io import BytesIO
+                    reader = PdfReader(BytesIO(uploaded_file.read()))
+                    file_content = "\n".join(p.extract_text() or "" for p in reader.pages)
+                except ImportError:
+                    st.error("PDF support requires pypdf: `pip install pypdf`")
+                    file_content = ""
+            else:
+                file_content = uploaded_file.read().decode("utf-8", errors="ignore")
+            if file_content:
+                st.session_state.transcript_input = file_content
+                st.session_state._loaded_file = uploaded_file.name
+                st.session_state.transcript_url = ""   # clear URL field
+                st.rerun()
+    else:
+        # File removed — reset tracking so the same file can be re-uploaded
+        if st.session_state.get("_loaded_file"):
+            st.session_state._loaded_file = None
 
     transcript_input = st.text_area(
         "Or paste transcript here",
