@@ -845,12 +845,25 @@ def render_section(placeholder, css_class: str, title: str, content: str):
     )
 
 
+def _extract_signal(text: str, keyword: str, known: dict) -> str:
+    """Find the last line matching 'KEYWORD: Value' where Value is a known key.
+
+    Searches from the end so body text mentioning the keyword (e.g.
+    'management expressed confidence: in recovery') is skipped in favour
+    of the actual signal line the model appends at the end.
+    """
+    for line in reversed(text.strip().splitlines()):
+        m = re.match(rf'\s*{keyword}:\s*\**\[?\s*([A-Za-z]+)', line.strip(), re.IGNORECASE)
+        if m:
+            val = m.group(1).capitalize()
+            if val in known:
+                return val
+    return ""
+
+
 def render_sentiment(placeholder, tone: str):
-    # Skip any formatting chars (**bold**, spaces, brackets) before the value word
-    sentiment_match  = re.search(r'SENTIMENT:[^A-Za-z\[]*\[?([A-Za-z]+)',  tone, re.IGNORECASE)
-    confidence_match = re.search(r'CONFIDENCE:[^A-Za-z\[]*\[?([A-Za-z]+)', tone, re.IGNORECASE)
-    sentiment_val  = sentiment_match.group(1).strip().capitalize()  if sentiment_match  else ""
-    confidence_val = confidence_match.group(1).strip().capitalize() if confidence_match else ""
+    sentiment_val  = _extract_signal(tone, 'SENTIMENT',  SENTIMENT_COLORS)
+    confidence_val = _extract_signal(tone, 'CONFIDENCE', CONFIDENCE_COLORS)
     s_color = SENTIMENT_COLORS.get(sentiment_val, "#6b7280")
     c_color = CONFIDENCE_COLORS.get(confidence_val, "#6b7280")
     c_pct   = CONFIDENCE_PCT.get(confidence_val, 50)

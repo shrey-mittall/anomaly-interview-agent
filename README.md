@@ -153,7 +153,7 @@ If any section thread has not completed within 120 seconds, it is abandoned and 
 If a section exhausts its retries and fails, a red error card replaces only that section. The remaining four sections render normally. The analysis is never fully aborted due to a single section failure.
 
 **Sentiment/confidence signal protection.**
-The tone section prompt instructs the model to output `SENTIMENT: Word` and `CONFIDENCE: Word` without brackets. The PII obfuscation pass protects these lines from name replacement via placeholder swap. The parser uses `[^A-Za-z\[]*\[?([A-Za-z]+)` — skipping any stray `**` bold markers or punctuation — and `.capitalize()` normalisation so `medium`/`MEDIUM`/`Medium` all resolve correctly. These layers ensure the sentiment display renders reliably regardless of model formatting variation.
+The tone section prompt instructs the model to output `SENTIMENT: Word` and `CONFIDENCE: Word` without brackets. The PII obfuscation pass protects these lines from name replacement via placeholder swap. `_extract_signal()` scans from the **end** of the tone text, accepting only values that match the known color map — so body text that happens to contain the words "sentiment" or "confidence" cannot pollute the display. `.capitalize()` normalisation handles `medium`/`MEDIUM`/`Medium` identically. These layers ensure the sentiment display renders reliably regardless of model formatting variation or PII obfuscation state.
 
 ---
 
