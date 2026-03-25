@@ -122,7 +122,11 @@ Toggle wind streaks in the background — speed and colour themed per model tier
 Optional expander in settings. Paste in sell-side Revenue and EPS consensus — the Financial Summary section will explicitly state "beat by $X" / "missed by $X" rather than relying on the transcript mentioning it.
 
 ### Quarter-over-Quarter Comparison
-Optional expander below the main transcript input. Upload or paste a prior quarter transcript — the five main sections always run on the current transcript only (normal output format is preserved). After they complete, a dedicated 6th API call generates an appended **📊 Quarter-over-Quarter Comparison** card covering:
+Optional expander below the main transcript input. Upload or paste a prior quarter transcript — the five main sections always run on the current transcript only (normal output format is preserved). After they complete, two additional API calls generate an appended **📊 Quarter-over-Quarter Comparison** card:
+
+**Numeric delta table** — a grounded diff of key metrics (revenue, EBITDA margin, EPS, FCF, guidance ranges, leverage) showing Prior → Current with colour-coded change (green ↑ / red ↓). Each value is verified to appear literally in its source text before display — no inferred or calculated numbers.
+
+**Narrative comparison** covering:
 - Guidance changes (revised up/down/maintained with specific numbers)
 - Tone shift (confidence, hedging, candour vs prior quarter)
 - Narrative changes (themes that appeared, disappeared, or intensified)

@@ -654,6 +654,99 @@ Total response: under 300 words. Skip anything unchanged."""
             yield text
 
 
+def _value_in_source(value: str, source: str) -> bool:
+    """Check that the core numeric token from value appears literally in source."""
+    # Extract digits+decimals from value (e.g. "1.57" from "$1.57B", "17.5" from "17.5%")
+    nums = re.findall(r'\d+\.?\d*', value)
+    if not nums:
+        return True  # no number to verify (e.g. "raised", "cut") — allow through
+    return any(n in source for n in nums)
+
+
+def run_delta_extraction(cur_financial: str, cur_guidance: str, prior_transcript: str, model: str) -> list:
+    """Extract numeric metric changes between quarters. Returns list of verified delta dicts."""
+    system = (
+        "You are a financial analyst extracting numeric metric changes between two earnings quarters. "
+        "Output only DELTA lines — no preamble, no commentary."
+    )
+    cur_source = cur_financial + "\n" + cur_guidance
+    prior_source = prior_transcript[:15_000]
+    prompt = (
+        "For each numeric metric, output exactly one line:\n"
+        "DELTA | <metric> | <prior value> | <current value> | <change> | <UP or DOWN or FLAT>\n\n"
+        "STRICT RULES — violation means omit the metric entirely:\n"
+        "- The prior value MUST be a number quoted verbatim from the PRIOR QUARTER text below\n"
+        "- The current value MUST be a number quoted verbatim from the CURRENT QUARTER text below\n"
+        "- If you cannot find the exact stated number for EITHER side, omit that metric\n"
+        "- Do NOT calculate, infer, or approximate any value\n"
+        "- Change: use simple form (e.g. '-$80M', '+150bps', 'raised', 'cut')\n"
+        "- Direction: UP = better, DOWN = worse, FLAT = unchanged\n"
+        "- No other output — only DELTA lines\n\n"
+        f"CURRENT QUARTER — FINANCIAL SUMMARY + GUIDANCE:\n{cur_source[:5_000]}\n\n"
+        f"PRIOR QUARTER TRANSCRIPT:\n{prior_source}"
+    )
+    resp = get_client().messages.create(
+        model=model, max_tokens=1024,
+        system=system,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = resp.content[0].text.strip()
+    deltas = []
+    for line in raw.splitlines():
+        if line.startswith("DELTA |"):
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) == 6:
+                _, metric, prior, current, change, direction = parts
+                # Verify both values appear in their respective source texts
+                if not _value_in_source(prior, prior_source):
+                    continue
+                if not _value_in_source(current, cur_source):
+                    continue
+                deltas.append({"metric": metric, "prior": prior,
+                                "current": current, "change": change,
+                                "direction": direction.upper()})
+    return deltas
+
+
+def render_delta_table(deltas: list) -> str:
+    """Render a visual numeric diff table from parsed delta dicts."""
+    if not deltas:
+        return ""
+    rows = ""
+    for d in deltas:
+        dir_ = d["direction"]
+        if dir_ == "UP":
+            color, arrow = "#10b981", "↑"
+        elif dir_ == "DOWN":
+            color, arrow = "#ef4444", "↓"
+        else:
+            color, arrow = "#6b7280", "→"
+        rows += (
+            f'<tr style="border-bottom:1px solid rgba(128,128,128,0.1)">'
+            f'<td style="padding:7px 10px;font-weight:600;font-size:13px">{d["metric"]}</td>'
+            f'<td style="padding:7px 10px;font-size:13px;opacity:0.55;text-align:right">{d["prior"]}</td>'
+            f'<td style="padding:7px 6px;font-size:13px;opacity:0.4;text-align:center">→</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;text-align:right">{d["current"]}</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{color};text-align:right">'
+            f'{d["change"]} {arrow}</td>'
+            f'</tr>'
+        )
+    return (
+        '<table style="width:100%;border-collapse:collapse;margin-bottom:18px">'
+        '<thead><tr style="border-bottom:2px solid rgba(128,128,128,0.2)">'
+        '<th style="padding:6px 10px;font-size:11px;letter-spacing:2px;text-transform:uppercase;'
+        'text-align:left;opacity:0.5;font-weight:700">Metric</th>'
+        '<th style="padding:6px 10px;font-size:11px;letter-spacing:2px;text-transform:uppercase;'
+        'text-align:right;opacity:0.5;font-weight:700">Prior</th>'
+        '<th></th>'
+        '<th style="padding:6px 10px;font-size:11px;letter-spacing:2px;text-transform:uppercase;'
+        'text-align:right;opacity:0.5;font-weight:700">Current</th>'
+        '<th style="padding:6px 10px;font-size:11px;letter-spacing:2px;text-transform:uppercase;'
+        'text-align:right;opacity:0.5;font-weight:700">Change</th>'
+        '</thead><tbody>' + rows + '</tbody></table>'
+    )
+
+
 def run_qa_question(transcript: str, question: str, history: list, model: str) -> str:
     """Answer a grounded question about the transcript. Non-streaming."""
     system = (
@@ -1027,19 +1120,29 @@ def _extract_signal(text: str, keyword: str, known: dict) -> str:
 def render_sentiment(placeholder, tone: str):
     sentiment_val  = _extract_signal(tone, 'SENTIMENT',  SENTIMENT_COLORS)
     confidence_val = _extract_signal(tone, 'CONFIDENCE', CONFIDENCE_COLORS)
+    tone_body = re.sub(r'SENTIMENT:.*', '', tone)
+    tone_body = re.sub(r'CONFIDENCE:.*', '', tone_body).strip()
+    h3 = f'<h3><span class="tip" data-tip="{SECTION_TOOLTIPS["🎯 Tone / Sentiment"]}">🎯 Tone / Sentiment</span></h3>'
+
+    # If signals couldn't be parsed, skip the fancy display entirely
+    if not sentiment_val and not confidence_val:
+        placeholder.markdown(
+            f'<div class="sentiment-card">{h3}{fmt(tone_body)}</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
     s_color = SENTIMENT_COLORS.get(sentiment_val, "#6b7280")
     c_color = CONFIDENCE_COLORS.get(confidence_val, "#6b7280")
     c_pct   = CONFIDENCE_PCT.get(confidence_val, 50)
-    tone_body = re.sub(r'SENTIMENT:.*', '', tone)
-    tone_body = re.sub(r'CONFIDENCE:.*', '', tone_body).strip()
     placeholder.markdown(
-        f'<div class="sentiment-card"><h3><span class="tip" data-tip="{SECTION_TOOLTIPS["🎯 Tone / Sentiment"]}">🎯 Tone / Sentiment</span></h3>'
+        f'<div class="sentiment-card">{h3}'
         f'<div style="text-align:center;padding:24px 0 20px">'
-        f'<div style="font-size:2.6rem;font-weight:900;letter-spacing:3px;color:{s_color};text-shadow:0 0 24px {s_color}66">{sentiment_val.upper() if sentiment_val else "—"}</div>'
+        f'<div style="font-size:2.6rem;font-weight:900;letter-spacing:3px;color:{s_color};text-shadow:0 0 24px {s_color}66">{sentiment_val.upper()}</div>'
         f'<div style="margin-top:10px;font-size:0.85rem;color:#aaa;letter-spacing:2px;text-transform:uppercase">Management Confidence</div>'
         f'<div style="margin:8px auto 4px;width:180px;height:8px;background:rgba(128,128,128,0.2);border-radius:4px">'
         f'<div style="width:{c_pct}%;height:100%;background:{c_color};border-radius:4px;box-shadow:0 0 8px {c_color}"></div></div>'
-        f'<div style="font-size:1rem;font-weight:700;color:{c_color}">{confidence_val or "—"}</div>'
+        f'<div style="font-size:1rem;font-weight:700;color:{c_color}">{confidence_val}</div>'
         f'</div>'
         f'<div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:14px">{fmt(tone_body)}</div>'
         f'</div>',
@@ -1354,7 +1457,7 @@ if run_btn and transcript_input.strip():
         )
 
     # Clear previous output so stale results don't flash before new ones arrive
-    for k in ("last_raw", "last_sections", "last_elapsed", "last_meta", "last_stopped", "last_pii_found", "last_email", "generate_email", "last_qoq", "pending_qoq", "last_transcript", "qa_history"):
+    for k in ("last_raw", "last_sections", "last_elapsed", "last_meta", "last_stopped", "last_pii_found", "last_email", "generate_email", "last_qoq", "last_qoq_deltas", "pending_qoq", "last_transcript", "qa_history"):
         st.session_state.pop(k, None)
 
     st.session_state.pending_run           = True
@@ -1717,7 +1820,27 @@ if st.session_state.get("pending_qoq") and not st.session_state.get("running"):
     qoq_placeholder = st.empty()
     qoq_placeholder.markdown(
         '<div class="qoq-card" style="opacity:0.4"><h3>📊 Quarter-over-Quarter Comparison</h3>'
-        '<span style="color:#aaa">Generating comparison...</span></div>',
+        '<span style="color:#aaa">Extracting deltas...</span></div>',
+        unsafe_allow_html=True,
+    )
+    # ── Step 1: extract numeric deltas (non-streaming) ────────────────────────
+    try:
+        deltas = run_delta_extraction(
+            cur_financial=sections_for_qoq.get("##FINANCIAL_SUMMARY##", ""),
+            cur_guidance=sections_for_qoq.get("##GUIDANCE##", ""),
+            prior_transcript=prior_t,
+            model=qoq_model,
+        )
+    except Exception:
+        deltas = []
+    delta_html = render_delta_table(deltas)
+    st.session_state.last_qoq_deltas = delta_html
+
+    # ── Step 2: stream prose comparison ──────────────────────────────────────
+    qoq_placeholder.markdown(
+        '<div class="qoq-card" style="opacity:0.4"><h3>📊 Quarter-over-Quarter Comparison</h3>'
+        + delta_html +
+        '<span style="color:#aaa">Generating narrative comparison...</span></div>',
         unsafe_allow_html=True,
     )
     qoq_raw = ""
@@ -1732,28 +1855,31 @@ if st.session_state.get("pending_qoq") and not st.session_state.get("running"):
         ):
             qoq_raw += chunk
             qoq_placeholder.markdown(
-                '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>' +
-                qoq_raw.strip().replace("\n", "<br>") + "</div>",
+                '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>'
+                + delta_html
+                + qoq_raw.strip().replace("\n", "<br>") + "</div>",
                 unsafe_allow_html=True,
             )
         st.session_state.last_qoq = qoq_raw
         qoq_placeholder.markdown(
-            '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>' +
-            fmt(qoq_raw) + "</div>",
+            '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>'
+            + delta_html + fmt(qoq_raw) + "</div>",
             unsafe_allow_html=True,
         )
     except Exception as e:
         qoq_placeholder.markdown(
             f'<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>'
+            + delta_html +
             f'<span style="color:#ef4444">⚠ Comparison failed: {e}</span></div>',
             unsafe_allow_html=True,
         )
 
 elif st.session_state.get("last_qoq") and not st.session_state.get("running"):
     st.divider()
+    delta_html = st.session_state.get("last_qoq_deltas", "")
     st.markdown(
-        '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>' +
-        fmt(st.session_state.last_qoq) + "</div>",
+        '<div class="qoq-card"><h3>📊 Quarter-over-Quarter Comparison</h3>'
+        + delta_html + fmt(st.session_state.last_qoq) + "</div>",
         unsafe_allow_html=True,
     )
 
