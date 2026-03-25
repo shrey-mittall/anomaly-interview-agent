@@ -500,7 +500,8 @@ def _stream_section(section_key: str, transcript: str, length: str,
 
 # ── QoQ comparison ────────────────────────────────────────────────────────────
 _QOQ_SYSTEM = """You are a senior investment analyst comparing two consecutive earnings calls for the same company.
-Be direct and specific. Flag meaningful changes, not noise. Use real numbers where available."""
+Be extremely concise — bullets only, no preamble, no summary sentence. Flag changes, not similarities.
+Each section gets 2-3 bullets maximum. Total response must be under 300 words."""
 
 def run_qoq_comparison_streaming(
     cur_guidance: str, cur_tone: str,
@@ -508,24 +509,27 @@ def run_qoq_comparison_streaming(
     model: str, max_tokens: int, temperature: float,
 ):
     """Stream a quarter-over-quarter comparison given current sections + prior transcript."""
-    prompt = f"""Compare the current quarter results against the prior quarter transcript below.
+    # Trim prior transcript to keep prompt tight and avoid token overrun
+    prior_trimmed = prior_transcript[:15_000]
+
+    prompt = f"""Compare current vs prior quarter. Be brief — 2-3 bullets per section max.
 
 CURRENT QUARTER — GUIDANCE:
-{cur_guidance}
+{cur_guidance[:3_000]}
 
 CURRENT QUARTER — TONE/SENTIMENT:
-{cur_tone}
+{cur_tone[:1_500]}
 
-PRIOR QUARTER TRANSCRIPT:
-{prior_transcript[:40_000]}
+PRIOR QUARTER TRANSCRIPT (excerpt):
+{prior_trimmed}
 
-Write a quarter-over-quarter comparison covering:
-1. **Guidance changes** — what was revised up, down, or maintained vs prior quarter. Use specific numbers.
-2. **Tone shift** — is management more or less confident? Any change in hedging, deflection, or candour?
-3. **Narrative changes** — key themes that appeared, disappeared, or intensified.
-4. **Red flags / green flags** — anything materially different that a PM should act on.
+Cover exactly these four sections, each with 2-3 bullets only:
+1. **Guidance changes** — revised up/down/maintained. Numbers only, no prose.
+2. **Tone shift** — more/less confident vs prior. One key observation.
+3. **Narrative changes** — themes that appeared, disappeared, or intensified. Key ones only.
+4. **Red flags / green flags** — actionable items for a PM. Flag the most important change only.
 
-Be concise and direct. Flag changes, not similarities."""
+Total response: under 300 words. Skip anything unchanged."""
 
     with get_client().messages.stream(
         model=model,
@@ -832,14 +836,32 @@ def render_takeaway(placeholder, takeaway: str):
     )
 
 
+def _md_label(text: str) -> str:
+    """Escape square brackets so Streamlit doesn't parse [TOKEN] as a markdown link."""
+    return text.replace('[', '\\[').replace(']', '\\]')
+
+
+def _clean_label(text: str) -> str:
+    """Strip markdown bold/italic markers that can leak into display labels."""
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.*?)\*',     r'\1', text)
+    text = text.replace('**', '').replace('*', '')
+    return text.strip()
+
+
 def render_qa(placeholder, qa_text: str):
     qa_items = parse_qa(qa_text)
     with placeholder.container():
         st.markdown('<div class="section-card"><h3>💬 Q&A Highlights</h3>', unsafe_allow_html=True)
         for i, item in enumerate(qa_items, 1):
-            analyst_label   = item['analyst']   or 'Analyst'
-            executive_label = item.get('executive') or ''
-            header = f"Q{i} — {analyst_label} → {executive_label}" if executive_label else f"Q{i} — {analyst_label}"
+            analyst_label   = _clean_label(item['analyst'])   or 'Analyst'
+            executive_label = _clean_label(item.get('executive') or '')
+            # Escape brackets in expander header — Streamlit renders labels as markdown
+            # and [ANALYST_1] without a trailing (url) can break some parsers.
+            header_analyst   = _md_label(analyst_label)
+            header_executive = _md_label(executive_label)
+            header = (f"Q{i} — {header_analyst} → {header_executive}"
+                      if executive_label else f"Q{i} — {header_analyst}")
             with st.expander(header):
                 if executive_label:
                     st.markdown(
@@ -850,8 +872,16 @@ def render_qa(placeholder, qa_text: str):
                         f'</div>',
                         unsafe_allow_html=True,
                     )
-                st.markdown(f"**Question:** {item['question']}")
-                st.markdown(f"**Response:** {item['response']}")
+                # Render Q/R as HTML via fmt() so [TOKEN] brackets are treated as
+                # literal text rather than going through markdown link parsing.
+                st.markdown(
+                    f'<div style="margin-bottom:8px"><strong>Question:</strong><br>{fmt(item["question"])}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f'<div><strong>Response:</strong><br>{fmt(item["response"])}</div>',
+                    unsafe_allow_html=True,
+                )
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -1159,7 +1189,11 @@ if st.session_state.get("pending_run") and st.session_state.running:
         section_max = int(max_tokens_override)
 
         q = _queue.Queue()
-        for delim in SECTION_DELIMITERS:
+        for i, delim in enumerate(SECTION_DELIMITERS):
+            # Stagger starts by 200 ms so all 5 calls don't hit the API simultaneously.
+            # This avoids rate-limit queuing that leaves sections stuck on "Waiting...".
+            if i > 0:
+                time.sleep(0.2)
             threading.Thread(
                 target=_stream_section,
                 args=(delim, transcript, length, selected_model, section_max, temperature, q),
@@ -1209,14 +1243,21 @@ if st.session_state.get("pending_run") and st.session_state.running:
                     )
                 else:
                     content = section_raw[section_key]
-                    if section_key == "##TONE_SENTIMENT##":
-                        render_sentiment(placeholders[section_key], content)
-                    elif section_key == "##INVESTMENT_TAKEAWAY##":
-                        render_takeaway(placeholders[section_key], content)
-                    elif section_key == "##QA_HIGHLIGHTS##":
-                        render_qa(placeholders[section_key], content)
-                    else:
-                        render_section(placeholders[section_key], css_class, title, content)
+                    try:
+                        if section_key == "##TONE_SENTIMENT##":
+                            render_sentiment(placeholders[section_key], content)
+                        elif section_key == "##INVESTMENT_TAKEAWAY##":
+                            render_takeaway(placeholders[section_key], content)
+                        elif section_key == "##QA_HIGHLIGHTS##":
+                            render_qa(placeholders[section_key], content)
+                        else:
+                            render_section(placeholders[section_key], css_class, title, content)
+                    except Exception as render_err:
+                        placeholders[section_key].markdown(
+                            f'<div class="{css_class}" style="opacity:0.6"><h3>{title}</h3>'
+                            f'<span style="color:#f97316">⚠ Render error: {render_err}</span></div>',
+                            unsafe_allow_html=True,
+                        )
             else:
                 section_raw[section_key] += chunk
                 css_class, title = SECTION_LABELS[section_key]
@@ -1266,7 +1307,7 @@ if st.session_state.get("pending_run") and st.session_state.running:
             st.session_state.qoq_prior_transcript = prior_transcript
             st.session_state.qoq_sections         = sections
             st.session_state.qoq_model            = selected_model
-            st.session_state.qoq_max_tokens       = min(int(max_tokens_override), 2048)
+            st.session_state.qoq_max_tokens       = min(int(max_tokens_override), 1024)
             st.session_state.qoq_temperature      = temperature
 
         st.rerun()
@@ -1428,7 +1469,7 @@ if st.session_state.get("pending_qoq") and not st.session_state.get("running"):
     sections_for_qoq  = st.session_state.get("qoq_sections", {})
     prior_t           = st.session_state.get("qoq_prior_transcript", "")
     qoq_model         = st.session_state.get("qoq_model", "claude-sonnet-4-6")
-    qoq_max_tokens    = st.session_state.get("qoq_max_tokens", 2048)
+    qoq_max_tokens    = st.session_state.get("qoq_max_tokens", 1024)
     qoq_temperature   = st.session_state.get("qoq_temperature", 0.3)
 
     st.divider()
