@@ -122,8 +122,8 @@ The QoQ prompt enforces **2-3 bullets per section, under 300 words** and uses 1,
 ### Cross-Transcript Memory
 Every completed analysis is automatically saved to `transcript_history.json` (up to 50 entries). The **📚 History** expander in the settings panel lists past runs by company and date. Clicking **Load** on any entry opens a **side-by-side comparison view** — current run on the left, loaded run on the right — showing Guidance, Tone/Sentiment, and Investment Takeaway for both. History can be cleared at any time.
 
-### Advanced / Dev
-Expander with manual **temperature** and **max tokens** overrides.
+### Section tooltips
+Each section heading (`Financial Summary`, `Guidance`, etc.) shows a hover tooltip with the exact brief description of what that section covers. Implemented as a CSS `::after` tooltip (instant on hover, dark-themed) rather than the native browser `title=` attribute.
 
 ---
 
@@ -153,7 +153,7 @@ If any section thread has not completed within 120 seconds, it is abandoned and 
 If a section exhausts its retries and fails, a red error card replaces only that section. The remaining four sections render normally. The analysis is never fully aborted due to a single section failure.
 
 **Sentiment/confidence signal protection.**
-The tone section prompt instructs the model to output `SENTIMENT: Word` and `CONFIDENCE: Word` without brackets. The PII obfuscation pass protects these lines from name replacement via placeholder swap. The regex parser uses `\[?(\w+)\]?` as a fallback to handle any output that still includes brackets. These three layers ensure the sentiment display always renders correctly.
+The tone section prompt instructs the model to output `SENTIMENT: Word` and `CONFIDENCE: Word` without brackets. The PII obfuscation pass protects these lines from name replacement via placeholder swap. The parser uses `[^A-Za-z\[]*\[?([A-Za-z]+)` — skipping any stray `**` bold markers or punctuation — and `.capitalize()` normalisation so `medium`/`MEDIUM`/`Medium` all resolve correctly. These layers ensure the sentiment display renders reliably regardless of model formatting variation.
 
 ---
 
