@@ -54,9 +54,9 @@ st.markdown("""
     /* ── Grandiose shared h3 style ── */
     .financial-card h3, .guidance-card h3, .qa-card h3,
     .takeaway-card h3, .sentiment-card h3, .qoq-card h3 {
-        font-size: 11px !important;
+        font-size: 18px !important;
         font-weight: 800 !important;
-        letter-spacing: 3px !important;
+        letter-spacing: 2px !important;
         text-transform: uppercase !important;
         margin-top: 0 !important;
         margin-bottom: 16px !important;
