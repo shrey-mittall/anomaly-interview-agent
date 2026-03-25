@@ -42,42 +42,91 @@ st.set_page_config(
 # ── Base CSS (theme-adaptive) ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .section-card {
-        background: rgba(59,130,246,0.07);
-        border-left: 4px solid #3b82f6;
+    /* ── Shared card base ── */
+    .financial-card, .guidance-card, .qa-card,
+    .takeaway-card, .sentiment-card, .qoq-card {
         border-radius: 6px;
-        padding: 16px 20px;
+        padding: 20px 24px;
         margin-bottom: 18px;
         backdrop-filter: blur(4px);
     }
-    .section-card h3 { margin-top: 0; color: #3b82f6 !important; font-size: 15px; }
+
+    /* ── Grandiose shared h3 style ── */
+    .financial-card h3, .guidance-card h3, .qa-card h3,
+    .takeaway-card h3, .sentiment-card h3, .qoq-card h3 {
+        font-size: 11px !important;
+        font-weight: 800 !important;
+        letter-spacing: 3px !important;
+        text-transform: uppercase !important;
+        margin-top: 0 !important;
+        margin-bottom: 16px !important;
+        padding-bottom: 10px !important;
+    }
+
+    /* ── Per-section colours ── */
+    .financial-card {
+        background: rgba(59,130,246,0.07);
+        border-left: 4px solid #3b82f6;
+    }
+    .financial-card h3 {
+        color: #3b82f6 !important;
+        border-bottom: 1px solid rgba(59,130,246,0.3);
+    }
+
+    .guidance-card {
+        background: rgba(14,165,233,0.07);
+        border-left: 4px solid #0ea5e9;
+    }
+    .guidance-card h3 {
+        color: #0ea5e9 !important;
+        border-bottom: 1px solid rgba(14,165,233,0.3);
+    }
+
+    .qa-card {
+        background: rgba(139,92,246,0.07);
+        border-left: 4px solid #8b5cf6;
+    }
+    .qa-card h3 {
+        color: #8b5cf6 !important;
+        border-bottom: 1px solid rgba(139,92,246,0.3);
+    }
+
+    .sentiment-card {
+        background: rgba(245,158,11,0.07);
+        border-left: 4px solid #f59e0b;
+    }
+    .sentiment-card h3 {
+        color: #d97706 !important;
+        border-bottom: 1px solid rgba(245,158,11,0.3);
+    }
 
     .takeaway-card {
         background: rgba(16,185,129,0.07);
         border-left: 4px solid #10b981;
-        border-radius: 6px;
-        padding: 16px 20px;
-        margin-bottom: 18px;
     }
-    .takeaway-card h3 { color: #10b981 !important; font-size: 15px; margin-top: 0; }
-
-    .sentiment-card {
-        border-left: 4px solid #f59e0b;
-        background: rgba(245,158,11,0.07);
-        border-radius: 6px;
-        padding: 16px 20px;
-        margin-bottom: 18px;
+    .takeaway-card h3 {
+        color: #10b981 !important;
+        border-bottom: 1px solid rgba(16,185,129,0.3);
     }
-    .sentiment-card h3 { color: #d97706 !important; font-size: 15px; margin-top: 0; }
 
     .qoq-card {
-        background: rgba(139,92,246,0.07);
-        border-left: 4px solid #8b5cf6;
-        border-radius: 6px;
-        padding: 16px 20px;
-        margin-bottom: 18px;
+        background: rgba(244,63,94,0.07);
+        border-left: 4px solid #f43f5e;
     }
-    .qoq-card h3 { color: #7c3aed !important; font-size: 15px; margin-top: 0; }
+    .qoq-card h3 {
+        color: #f43f5e !important;
+        border-bottom: 1px solid rgba(244,63,94,0.3);
+    }
+
+    /* ── Dark-mode: brighter accent colours ── */
+    @media (prefers-color-scheme: dark) {
+        .financial-card h3  { color: #60a5fa !important; }
+        .guidance-card h3   { color: #38bdf8 !important; }
+        .qa-card h3         { color: #a78bfa !important; }
+        .sentiment-card h3  { color: #fbbf24 !important; }
+        .takeaway-card h3   { color: #34d399 !important; }
+        .qoq-card h3        { color: #fb7185 !important; }
+    }
 
     .history-card {
         background: rgba(128,128,128,0.06);
@@ -122,15 +171,6 @@ st.markdown("""
         position: relative;
         z-index: 1;
         border-radius: 12px;
-    }
-
-    /* Dark-mode accent overrides — richer colours on dark bg */
-    @media (prefers-color-scheme: dark) {
-        .section-card h3  { color: #60a5fa !important; }
-        .takeaway-card h3 { color: #34d399 !important; }
-        .sentiment-card h3 { color: #fbbf24 !important; }
-        .qoq-card h3      { color: #a78bfa !important; }
-        .email-card h3    { color: #93c5fd !important; }
     }
 
     /* Section-title tooltip */
@@ -928,7 +968,7 @@ def _clean_label(text: str) -> str:
 def render_qa(placeholder, qa_text: str):
     qa_items = parse_qa(qa_text)
     with placeholder.container():
-        st.markdown(f'<div class="section-card"><h3><span class="tip" data-tip="{SECTION_TOOLTIPS["💬 Q&A Highlights"]}">💬 Q&A Highlights</span></h3>', unsafe_allow_html=True)
+        st.markdown(f'<div class="qa-card"><h3><span class="tip" data-tip="{SECTION_TOOLTIPS["💬 Q&A Highlights"]}">💬 Q&A Highlights</span></h3>', unsafe_allow_html=True)
         for i, item in enumerate(qa_items, 1):
             analyst_label   = _clean_label(item['analyst'])   or 'Analyst'
             executive_label = _clean_label(item.get('executive') or '')
@@ -1246,9 +1286,9 @@ if st.session_state.get("pending_run") and st.session_state.running:
     # PII map will be shown in the persistent output block after streaming
 
     SECTION_LABELS = {
-        "##FINANCIAL_SUMMARY##":   ("section-card",   "📋 Financial Summary"),
-        "##GUIDANCE##":            ("section-card",   "🔭 Guidance"),
-        "##QA_HIGHLIGHTS##":       ("section-card",   "💬 Q&A Highlights"),
+        "##FINANCIAL_SUMMARY##":   ("financial-card", "📋 Financial Summary"),
+        "##GUIDANCE##":            ("guidance-card",  "🔭 Guidance"),
+        "##QA_HIGHLIGHTS##":       ("qa-card",        "💬 Q&A Highlights"),
         "##TONE_SENTIMENT##":      ("sentiment-card", "🎯 Tone / Sentiment"),
         "##INVESTMENT_TAKEAWAY##": ("takeaway-card",  "⚡ Investment Takeaway"),
     }
@@ -1374,9 +1414,9 @@ if st.session_state.get("pending_run") and st.session_state.running:
         # Re-render successful sections with full formatting; leave error cards untouched
         sections = parse_sections(raw)
         if "##FINANCIAL_SUMMARY##"   not in section_errors:
-            render_section(placeholders["##FINANCIAL_SUMMARY##"], "section-card", "📋 Financial Summary", sections.get("##FINANCIAL_SUMMARY##", ""))
+            render_section(placeholders["##FINANCIAL_SUMMARY##"], "financial-card", "📋 Financial Summary", sections.get("##FINANCIAL_SUMMARY##", ""))
         if "##GUIDANCE##"            not in section_errors:
-            render_section(placeholders["##GUIDANCE##"],          "section-card", "🔭 Guidance",           sections.get("##GUIDANCE##", ""))
+            render_section(placeholders["##GUIDANCE##"],          "guidance-card", "🔭 Guidance",           sections.get("##GUIDANCE##", ""))
         if "##QA_HIGHLIGHTS##"       not in section_errors:
             render_qa(placeholders["##QA_HIGHLIGHTS##"],                                                    sections.get("##QA_HIGHLIGHTS##", ""))
         if "##TONE_SENTIMENT##"      not in section_errors:
@@ -1430,8 +1470,8 @@ if not st.session_state.get("running") and st.session_state.get("last_sections")
             unsafe_allow_html=True,
         )
 
-    render_section(st.empty(), "section-card",   "📋 Financial Summary",   sections.get("##FINANCIAL_SUMMARY##", ""))
-    render_section(st.empty(), "section-card",   "🔭 Guidance",             sections.get("##GUIDANCE##", ""))
+    render_section(st.empty(), "financial-card", "📋 Financial Summary",   sections.get("##FINANCIAL_SUMMARY##", ""))
+    render_section(st.empty(), "guidance-card",  "🔭 Guidance",             sections.get("##GUIDANCE##", ""))
     render_qa(     st.empty(),                                               sections.get("##QA_HIGHLIGHTS##", ""))
     render_sentiment(st.empty(),                                             sections.get("##TONE_SENTIMENT##", ""))
     render_takeaway( st.empty(),                                             sections.get("##INVESTMENT_TAKEAWAY##", ""))
@@ -1627,7 +1667,7 @@ if st.session_state.get("last_raw") and not st.session_state.get("running"):
     for turn in qa_history:
         st.markdown(f"**Q: {turn['q']}**")
         st.markdown(
-            f'<div class="section-card" style="padding:14px 18px;margin-bottom:12px">{fmt(turn["a"])}</div>',
+            f'<div class="financial-card" style="padding:14px 18px;margin-bottom:12px">{fmt(turn["a"])}</div>',
             unsafe_allow_html=True,
         )
 
@@ -1679,12 +1719,12 @@ if st.session_state.get("compare_sections") and not st.session_state.get("runnin
     with col_a:
         st.markdown("**Current run**")
         cur = st.session_state.get("last_sections", {})
-        render_section(st.empty(), "section-card", "🔭 Guidance",         cur.get("##GUIDANCE##", "—"))
+        render_section(st.empty(), "guidance-card", "🔭 Guidance",         cur.get("##GUIDANCE##", "—"))
         render_sentiment(st.empty(),                                        cur.get("##TONE_SENTIMENT##", ""))
         render_takeaway(st.empty(),                                         cur.get("##INVESTMENT_TAKEAWAY##", ""))
     with col_b:
         st.markdown(f"**{co_c} ({ts_c})**")
-        render_section(st.empty(), "section-card", "🔭 Guidance",         compare_sections.get("##GUIDANCE##", "—"))
+        render_section(st.empty(), "guidance-card", "🔭 Guidance",         compare_sections.get("##GUIDANCE##", "—"))
         render_sentiment(st.empty(),                                        compare_sections.get("##TONE_SENTIMENT##", ""))
         render_takeaway(st.empty(),                                         compare_sections.get("##INVESTMENT_TAKEAWAY##", ""))
 
