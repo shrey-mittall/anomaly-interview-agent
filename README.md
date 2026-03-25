@@ -74,10 +74,11 @@ Three tiers, selectable from the sidebar:
 | 🔴 Most Thorough | Claude Opus 4.6 | ~30s | ~$0.10–0.25 |
 
 ### Streaming UI
-- All five sections stream **simultaneously** — each runs as an independent parallel API call, so total wall-clock time equals the slowest section rather than the sum of all five
+- All five sections stream **in parallel** — each is an independent API call in its own thread, staggered 200 ms apart to avoid simultaneous rate-limit pressure
 - Sections render as skeleton cards immediately, filling live as chunks arrive from each thread
 - Full markdown formatting applied on completion (bold, bullets, headings, **tables rendered as styled HTML**)
 - Output persists across setting changes — only cleared on a new run
+- Per-section render errors show a local warning card without interrupting other sections
 
 ### Run / Stop
 - **▶ Run Analysis** starts streaming
@@ -94,6 +95,7 @@ Optional checkbox. When enabled:
 - Second pass replaces full "First Last" name pairs and standalone last names throughout the text
 - Tokens numbered: `[EXECUTIVE_1]`, `[ANALYST_1]`, etc.
 - Structured signal lines (`SENTIMENT:`, `CONFIDENCE:`) are protected from replacement so the Tone/Sentiment display always renders correctly
+- Q&A section: bracket tokens are escaped in expander labels and stripped of stray `**` bold markers before display, so `[ANALYST_1]` renders cleanly in all contexts
 - **PII Redaction Map** expander shows every token → real name mapping with colour coding
 
 ### Email Draft
@@ -115,6 +117,8 @@ Optional expander below the main transcript input. Upload or paste a prior quart
 - Narrative changes (themes that appeared, disappeared, or intensified)
 - Red flags / green flags for the PM
 
+The QoQ prompt enforces **2-3 bullets per section, under 300 words** and uses 1,024 token budget (vs prior 2,048) to prevent hitting limits mid-output.
+
 ### Cross-Transcript Memory
 Every completed analysis is automatically saved to `transcript_history.json` (up to 50 entries). The **📚 History** expander in the settings panel lists past runs by company and date. Clicking **Load** on any entry opens a **side-by-side comparison view** — current run on the left, loaded run on the right — showing Guidance, Tone/Sentiment, and Investment Takeaway for both. History can be cleared at any time.
 
@@ -126,7 +130,7 @@ Expander with manual **temperature** and **max tokens** overrides.
 ## Performance
 
 **Parallel section inferencing.**
-Each of the five sections is produced by an independent API call running in its own background thread. All five fire simultaneously — total latency is the slowest section, not the sum of all five. Each section gets the full token budget independently, so no section competes with another for output length.
+Each of the five sections is produced by an independent API call running in its own background thread. Threads are staggered 200 ms apart (800 ms total) so calls don't all hit the API simultaneously and trigger rate-limit queuing — the primary cause of sections getting stuck on "Waiting...". Total latency is still the slowest section, not the sum of all five. Each section gets the full token budget independently.
 
 **Cached API client.**
 The Anthropic client is instantiated once per process via `@st.cache_resource` and reused across all runs and all section threads, avoiding repeated connection overhead.
